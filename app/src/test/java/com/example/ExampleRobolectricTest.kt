@@ -11,10 +11,14 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
@@ -138,39 +142,47 @@ class ExampleRobolectricTest {
       createdAtEpochMs = 1_000L,
     )
 
+    var stopClicked = false
+
     composeTestRule.setContent {
       SonicForgeTheme {
-        CustomAudioPlayer(
-          track = sampleTrack,
-          playbackState = AudioPlaybackState(
-            currentTrackId = sampleTrack.id,
-            isPrepared = true,
-            positionMs = 4_000L,
-            durationMs = 17_000L,
-            volume = 0.75f,
-          ),
-          canSkipPrevious = true,
-          canSkipNext = true,
-          onTogglePlayPause = { playClicked = true },
-          onBeginSeek = {},
-          onPreviewSeek = {},
-          onCommitSeek = {},
-          onSeekBy = {},
-          onSkipPrevious = {},
-          onSkipNext = {},
-          onToggleLoop = {},
-          onVolumeChange = {},
-          onToggleMute = { muteClicked = true },
-        )
+        Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+          CustomAudioPlayer(
+            track = sampleTrack,
+            playbackState = AudioPlaybackState(
+              currentTrackId = sampleTrack.id,
+              isPrepared = true,
+              positionMs = 4_000L,
+              durationMs = 17_000L,
+              volume = 0.75f,
+            ),
+            canSkipPrevious = true,
+            canSkipNext = true,
+            onTogglePlayPause = { playClicked = true },
+            onStop = { stopClicked = true },
+            onBeginSeek = {},
+            onPreviewSeek = {},
+            onCommitSeek = {},
+            onSeekBy = {},
+            onSkipPrevious = {},
+            onSkipNext = {},
+            onToggleLoop = {},
+            onVolumeChange = {},
+            onToggleMute = { muteClicked = true },
+          )
+        }
       }
     }
 
-    composeTestRule.onNodeWithTag("player_play_pause_button").assertIsDisplayed().performClick()
-    composeTestRule.onNodeWithTag("player_seek_slider").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("player_volume_slider").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("player_mute_button").assertIsDisplayed().performClick()
+    composeTestRule.onNodeWithTag("playback_play_button").performScrollTo().assertIsDisplayed().performClick()
+    composeTestRule.onNodeWithTag("playback_pause_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("playback_stop_button").performScrollTo().assertIsDisplayed().performClick()
+    composeTestRule.onNodeWithTag("player_seek_slider").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("player_volume_slider").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("player_mute_button").performScrollTo().assertIsDisplayed().performClick()
 
     assertTrue(playClicked)
+    assertTrue(stopClicked)
     assertTrue(muteClicked)
   }
 
@@ -3486,4 +3498,1024 @@ class ExampleRobolectricTest {
       tempDir.deleteRecursively()
     }
   }
+
+  @Test
+  fun `piano guitar drum synthesizers merge into normalized stereo stem and encode valid mp3`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempDir = File(context.cacheDir, "multi_instrument_test_${System.currentTimeMillis()}")
+    tempDir.mkdirs()
+    try {
+      // 1. Piano single note & multi-bar progression + recorded melody synthesis
+      val singleNote = com.example.audio.InstrumentSynthDsp.synthesizePianoNoteSamples(
+        midiNote = 60,
+        durationSec = 0.5,
+        voice = com.example.audio.PianoVoice.RHODES_EP,
+      )
+      assertTrue(singleNote.isNotEmpty())
+      assertTrue(singleNote.any { kotlin.math.abs(it) > 0.02f })
+
+      val pianoBuffer = com.example.audio.InstrumentSynthDsp.synthesizePianoTrackToBuffer(
+        voice = com.example.audio.PianoVoice.CONCERT_GRAND,
+        progression = com.example.audio.PianoProgressionPreset.POP_CLASSIC,
+        recordedNotes = emptyList(),
+        bpm = 104,
+        bars = 2,
+      )
+      assertTrue(pianoBuffer.pcmSamples.isNotEmpty())
+      val pianoPeaks = com.example.audio.FourierAudioBufferProcessor.extractWaveformPeaks(pianoBuffer.pcmSamples)
+      assertTrue(pianoPeaks.isNotEmpty())
+
+      // 2. Guitar Karplus-Strong string pluck, chord strum, and rhythm track
+      val guitarStrum = com.example.audio.InstrumentSynthDsp.synthesizeGuitarChordStrumSamples(
+        frets = com.example.audio.GuitarChordShape.C_MAJ.frets,
+        voice = com.example.audio.GuitarVoice.ACOUSTIC_STEEL,
+        durationSec = 0.7,
+      )
+      assertTrue(guitarStrum.isNotEmpty())
+      assertTrue(guitarStrum.any { kotlin.math.abs(it) > 0.02f })
+
+      val guitarBuffer = com.example.audio.InstrumentSynthDsp.synthesizeGuitarTrackToBuffer(
+        voice = com.example.audio.GuitarVoice.CLEAN_ELECTRIC,
+        chordSequence = listOf(
+          com.example.audio.GuitarChordShape.C_MAJ,
+          com.example.audio.GuitarChordShape.G_MAJ,
+        ),
+        strumStyle = com.example.audio.GuitarStrumStyle.FINGERSTYLE_ARP,
+        recordedPlucks = emptyList(),
+        bpm = 104,
+        bars = 2,
+      )
+      assertTrue(guitarBuffer.pcmSamples.isNotEmpty())
+      val guitarPeaks = com.example.audio.FourierAudioBufferProcessor.extractWaveformPeaks(guitarBuffer.pcmSamples)
+
+      // 3. Drum pad synthesis + kit-differentiated StepSequencerDsp
+      val acousticKick = com.example.audio.InstrumentSynthDsp.synthesizeDrumPadHitSamples(
+        pad = com.example.audio.DrumPadVoice.KICK,
+        kit = com.example.audio.DrumKitPreset.STUDIO_ACOUSTIC,
+      )
+      val punchKick = com.example.audio.InstrumentSynthDsp.synthesizeDrumPadHitSamples(
+        pad = com.example.audio.DrumPadVoice.KICK,
+        kit = com.example.audio.DrumKitPreset.TR_808,
+      )
+      assertTrue(acousticKick.isNotEmpty() && punchKick.isNotEmpty())
+      assertTrue(
+        "Different drum kits must synthesize distinct waveforms",
+        acousticKick.zip(punchKick).any { (a, b) -> kotlin.math.abs(a - b) > 0.01f }
+      )
+
+      val seqEngine = com.example.audio.StepSequencerEngine()
+      seqEngine.selectDrumKit(com.example.audio.DrumKitPreset.TR_808)
+      seqEngine.applyPreset(com.example.audio.SequencerPreset.FOUR_ON_FLOOR)
+      val drumBuffer = com.example.audio.StepSequencerDsp.renderPatternToRawBuffer(
+        state = seqEngine.state.value,
+        bars = 2,
+      )
+      assertTrue(drumBuffer.pcmSamples.isNotEmpty())
+      val drumPeaks = com.example.audio.FourierAudioBufferProcessor.extractWaveformPeaks(drumBuffer.pcmSamples)
+
+      // 4. Write all 3 stems to WAV and merge them via MultiTrackMixerDsp
+      val pianoFile = File(tempDir, "piano_stem.wav")
+      val guitarFile = File(tempDir, "guitar_stem.wav")
+      val drumFile = File(tempDir, "drum_stem.wav")
+      com.example.audio.FourierAudioBufferProcessor.writeWavFile(pianoFile, pianoBuffer)
+      com.example.audio.FourierAudioBufferProcessor.writeWavFile(guitarFile, guitarBuffer)
+      com.example.audio.FourierAudioBufferProcessor.writeWavFile(drumFile, drumBuffer)
+
+      val pianoTrack = GeneratedTrack(
+        id = "stem-piano",
+        title = "Concert Grand Theme",
+        prompt = "Piano",
+        genre = "Piano",
+        bpm = 104,
+        musicalKey = "WAV",
+        durationMs = pianoBuffer.durationMs,
+        filePath = pianoFile.absolutePath,
+        fileSizeBytes = pianoFile.length(),
+        waveformPeaks = pianoPeaks,
+        createdAtEpochMs = 1_000L,
+        sourceLabel = "Piano · Concert Grand",
+        category = "Piano",
+      )
+      val guitarTrack = pianoTrack.copy(
+        id = "stem-guitar",
+        title = "Clean Electric Arp",
+        genre = "Guitar",
+        durationMs = guitarBuffer.durationMs,
+        filePath = guitarFile.absolutePath,
+        fileSizeBytes = guitarFile.length(),
+        waveformPeaks = guitarPeaks,
+        sourceLabel = "Guitar · Clean Electric",
+        category = "Guitar",
+      )
+      val drumTrack = pianoTrack.copy(
+        id = "stem-drums",
+        title = "TR-808 Analog Beat",
+        genre = "Drums",
+        durationMs = drumBuffer.durationMs,
+        filePath = drumFile.absolutePath,
+        fileSizeBytes = drumFile.length(),
+        waveformPeaks = drumPeaks,
+        sourceLabel = "Drums · TR-808 Analog",
+        category = "Drums",
+      )
+
+      val merged = com.example.audio.MultiTrackMixerDsp.mergeTracksToRawBuffer(
+        stems = listOf(
+          com.example.audio.MixStemSpec(pianoTrack, gain = 1.0f, loopToMatch = true),
+          com.example.audio.MixStemSpec(guitarTrack, gain = 0.85f, loopToMatch = true),
+          com.example.audio.MixStemSpec(drumTrack, gain = 1.1f, loopToMatch = true),
+        ),
+      )
+      assertEquals(com.example.audio.MultiTrackMixerDsp.TARGET_SAMPLE_RATE, merged.sampleRate)
+      assertEquals(com.example.audio.MultiTrackMixerDsp.TARGET_CHANNELS, merged.channelCount)
+      assertTrue(merged.pcmSamples.size >= pianoBuffer.pcmSamples.size)
+      assertTrue(merged.fourierSpectrumBins.any { it > 0.01f })
+
+      // 5. Encode merged stereo master buffer to MP3 bytes
+      val mp3Bytes = com.example.audio.Mp3AudioExporter.encodeRawBufferToMp3Bytes(
+        buffer = merged,
+        bitrateKbps = 192,
+        trackTitle = "Full Band Master Mix",
+      )
+      assertTrue("Encoded MP3 must be substantial", mp3Bytes.size > 4096)
+    } finally {
+      tempDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `four page studio navigation and piano guitar drum merger ui trigger real callbacks`() {
+    val destinationState = androidx.compose.runtime.mutableStateOf(com.example.ui.StudioDestination.STUDIO)
+    val pianoState = androidx.compose.runtime.mutableStateOf(com.example.ui.PianoStudioState())
+    val guitarState = androidx.compose.runtime.mutableStateOf(com.example.ui.GuitarStudioState())
+    val sequencerState = androidx.compose.runtime.mutableStateOf(com.example.audio.StepSequencerState())
+
+    val pianoTrack = GeneratedTrack(
+      id = "ui-piano-1",
+      title = "Grand Piano Take",
+      prompt = "Piano",
+      genre = "Piano",
+      bpm = 96,
+      musicalKey = "WAV",
+      durationMs = 8_000L,
+      filePath = "/tmp/piano.wav",
+      fileSizeBytes = 128_000L,
+      waveformPeaks = listOf(0.3f, 0.7f, 0.5f),
+      createdAtEpochMs = 1_000L,
+      sourceLabel = "Piano · Concert Grand",
+      category = "Piano",
+    )
+    val guitarTrack = pianoTrack.copy(
+      id = "ui-guitar-1",
+      title = "Steel Strum Take",
+      genre = "Guitar",
+      category = "Guitar",
+      sourceLabel = "Guitar · Acoustic Steel",
+    )
+    val drumTrack = pianoTrack.copy(
+      id = "ui-drums-1",
+      title = "808 Groove",
+      genre = "Drums",
+      category = "Drums",
+      sourceLabel = "Drums · TR-808 Analog",
+    )
+
+    val mergeState = androidx.compose.runtime.mutableStateOf(
+      com.example.ui.MergeMixerState(
+        selectedTrackIds = setOf(pianoTrack.id, guitarTrack.id),
+      )
+    )
+
+    var quickSavedMp3Track: GeneratedTrack? = null
+    var generatedResource: com.example.audio.StudioSoundResource? = null
+    var selectedPianoVoice: com.example.audio.PianoVoice? = null
+    var playedPianoMidi: Int? = null
+    var pianoGenerateClicked = false
+    var selectedGuitarVoice: com.example.audio.GuitarVoice? = null
+    var pluckedString: Pair<Int, Int>? = null
+    var strummedChord = false
+    var guitarGenerateClicked = false
+    var selectedDrumKit: com.example.audio.DrumKitPreset? = null
+    var triggeredDrumPad: com.example.audio.DrumPadVoice? = null
+    var drumGenerateClicked = false
+    var autoPickedBand = false
+    var mergeAndSaveMp3Clicked = false
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        val currentUiState = com.example.ui.SonicForgeUiState(
+          tracks = listOf(pianoTrack, guitarTrack, drumTrack),
+          allTracks = listOf(pianoTrack, guitarTrack, drumTrack),
+          activeDestination = destinationState.value,
+          studioSectionTab = com.example.ui.StudioSectionTab.RESOURCES,
+          pianoState = pianoState.value,
+          guitarState = guitarState.value,
+          stepSequencer = sequencerState.value,
+          mergeMixer = mergeState.value,
+        )
+        com.example.ui.SonicForgeScreen(
+          uiState = currentUiState,
+          onSelectThemeMode = {},
+          onSelectEngine = {},
+          onPromptChanged = {},
+          onApplyPreset = {},
+          onGenerateTrack = {},
+          onImportAudioClick = {},
+          onSelectCategory = {},
+          onSearchQueryChanged = {},
+          onEditOrganizationClick = {},
+          onDismissEditOrganization = {},
+          onSaveOrganization = { _, _, _ -> },
+          onTrimTrackClick = {},
+          onDismissTrimDialog = {},
+          onConfirmTrim = { _, _, _, _ -> },
+          onExportMp3Click = {},
+          onDismissExportDialog = {},
+          onExportMp3ToMusic = {},
+          onExportMp3ToFolder = {},
+          onShareMp3 = {},
+          onRequestNotificationPermission = {},
+          onOpenNotificationSettings = {},
+          onSelectTrack = {},
+          onDeleteTrack = {},
+          onTogglePlayPause = {},
+          onBeginSeek = {},
+          onPreviewSeek = {},
+          onCommitSeek = {},
+          onSeekBy = {},
+          onSkipPrevious = {},
+          onSkipNext = {},
+          onToggleLoop = {},
+          onVolumeChange = {},
+          onToggleMute = {},
+          onSelectDestination = { destinationState.value = it },
+          onQuickSaveCurrentMp3 = { quickSavedMp3Track = it },
+          onGenerateSoundResource = { generatedResource = it },
+          onSelectPianoVoice = {
+            selectedPianoVoice = it
+            pianoState.value = pianoState.value.copy(selectedVoice = it)
+          },
+          onPlayPianoKey = { playedPianoMidi = it },
+          onTogglePianoRecording = {
+            pianoState.value = pianoState.value.copy(isRecording = !pianoState.value.isRecording)
+          },
+          onGeneratePianoTrack = { pianoGenerateClicked = true },
+          onSelectGuitarVoice = {
+            selectedGuitarVoice = it
+            guitarState.value = guitarState.value.copy(selectedVoice = it)
+          },
+          onPluckGuitarString = { s, f -> pluckedString = s to f },
+          onStrumGuitarChord = { strummedChord = true },
+          onGenerateGuitarTrack = { guitarGenerateClicked = true },
+          onSelectDrumKit = {
+            selectedDrumKit = it
+            sequencerState.value = sequencerState.value.copy(drumKit = it)
+          },
+          onTriggerDrumPad = { triggeredDrumPad = it },
+          onGenerateDrumTrack = { drumGenerateClicked = true },
+          onAutoPickBandStems = { autoPickedBand = true },
+          onMergeAndSaveMp3 = { mergeAndSaveMp3Clicked = true },
+        )
+      }
+    }
+
+    // 1. Studio page: 4-destination navigation + quick MP3 + merger + sound resources
+    composeTestRule.onNodeWithTag("nav_studio").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("nav_piano").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("nav_guitar").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("nav_drums").assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("quick_save_mp3_button").performClick()
+    assertEquals(pianoTrack.id, quickSavedMp3Track?.id)
+
+    composeTestRule.onNodeWithTag("studio_page_scroll")
+      .performScrollToNode(hasTestTag("multi_track_merger_card"))
+    composeTestRule.onNodeWithTag("merger_auto_pick_button").performScrollTo().performClick()
+    assertTrue(autoPickedBand)
+    composeTestRule.onNodeWithTag("merger_merge_mp3_button").performScrollTo().performClick()
+    assertTrue(mergeAndSaveMp3Clicked)
+
+    composeTestRule.onNodeWithTag("studio_page_scroll")
+      .performScrollToNode(hasTestTag("sound_resources_card"))
+    composeTestRule.onNodeWithTag("sound_resource_btn_res_rhodes_lofi").performScrollTo().performClick()
+    assertEquals(com.example.audio.StudioSoundResource.RHODES_LOFI_CHORDS, generatedResource)
+
+    // 2. Piano page
+    composeTestRule.onNodeWithTag("nav_piano").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("piano_studio_page").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("piano_voice_rhodes_ep").performScrollTo().performClick()
+    assertEquals(com.example.audio.PianoVoice.RHODES_EP, selectedPianoVoice)
+    composeTestRule.onNodeWithTag("piano_record_button").performScrollTo().performClick()
+    assertTrue(pianoState.value.isRecording)
+    composeTestRule.onNodeWithTag("piano_key_60").performScrollTo().performClick()
+    assertEquals(60, playedPianoMidi)
+    composeTestRule.onNodeWithTag("generate_piano_track_button").performScrollTo().performClick()
+    assertTrue(pianoGenerateClicked)
+
+    // 3. Guitar page
+    composeTestRule.onNodeWithTag("nav_guitar").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("guitar_studio_page").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("guitar_voice_classical_nylon").performScrollTo().performClick()
+    assertEquals(com.example.audio.GuitarVoice.CLASSICAL_NYLON, selectedGuitarVoice)
+    composeTestRule.onNodeWithTag("guitar_fret_0_3").performScrollTo().performClick()
+    assertEquals(0 to 3, pluckedString)
+    composeTestRule.onNodeWithTag("guitar_strum_now_button").performScrollTo().performClick()
+    assertTrue(strummedChord)
+    composeTestRule.onNodeWithTag("generate_guitar_track_button").performScrollTo().performClick()
+    assertTrue(guitarGenerateClicked)
+
+    // 4. Drums page
+    composeTestRule.onNodeWithTag("nav_drums").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("drum_studio_page").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("drum_kit_tr_808").performScrollTo().performClick()
+    assertEquals(com.example.audio.DrumKitPreset.TR_808, selectedDrumKit)
+    composeTestRule.onNodeWithTag("drum_pad_kick").performScrollTo().performClick()
+    assertEquals(com.example.audio.DrumPadVoice.KICK, triggeredDrumPad)
+    composeTestRule.onNodeWithTag("generate_drum_track_button").performScrollTo().performClick()
+    assertTrue(drumGenerateClicked)
+  }
+
+  @Test
+  fun `audio engine streams generated sound clips via AudioTrack with pause seek volume and stop controls`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempDir = File(context.cacheDir, "audio_engine_test_${System.currentTimeMillis()}")
+    tempDir.mkdirs()
+
+    var playCount = 0
+    var pauseCount = 0
+    var flushCount = 0
+    var stopCount = 0
+    var releaseCount = 0
+    var lastVolume = -1f
+    var writtenShortsCount = 0
+
+    val fakeFactory = com.example.audio.AudioTrackFactory { _, _, _ ->
+      object : com.example.audio.AudioTrackHandle {
+        override fun setVolume(gain: Float): Int {
+          lastVolume = gain
+          return android.media.AudioTrack.SUCCESS
+        }
+
+        override fun play() {
+          playCount++
+        }
+
+        override fun pause() {
+          pauseCount++
+        }
+
+        override fun flush() {
+          flushCount++
+        }
+
+        override fun writeBlocking(samples: ShortArray, offsetInShorts: Int, sizeInShorts: Int): Int {
+          writtenShortsCount += sizeInShorts
+          Thread.sleep(5L)
+          return sizeInShorts
+        }
+
+        override fun stop() {
+          stopCount++
+        }
+
+        override fun release() {
+          releaseCount++
+        }
+      }
+    }
+
+    val engine = com.example.audio.AudioEngine(trackFactory = fakeFactory)
+    try {
+      // 1. Missing file produces ERROR state cleanly
+      val missingFile = File(tempDir, "does_not_exist.wav")
+      engine.playFile(missingFile, clipId = "missing", title = "Missing Clip")
+      assertEquals(com.example.audio.AudioEngineStatus.ERROR, engine.state.value.status)
+
+      // 2. Real synthesized clip written to WAV decodes and streams to completion via AudioTrack
+      val noteBuf = com.example.audio.InstrumentSynthDsp.synthesizePianoTrackToBuffer(
+        voice = com.example.audio.PianoVoice.CONCERT_GRAND,
+        progression = com.example.audio.PianoProgressionPreset.POP_CLASSIC,
+        recordedNotes = emptyList(),
+        bpm = 120,
+        bars = 2,
+      )
+      val wavFile = File(tempDir, "studio_clip.wav")
+      com.example.audio.FourierAudioBufferProcessor.writeWavFile(wavFile, noteBuf)
+
+      val completed = java.util.concurrent.CountDownLatch(1)
+      engine.setVolume(0.65f)
+      engine.playFile(
+        file = wavFile,
+        clipId = "clip-1",
+        title = "Piano Clip",
+        looping = false,
+        onCompleted = { completed.countDown() },
+      )
+
+      assertTrue("Playback should finish streaming the generated clip", completed.await(10, java.util.concurrent.TimeUnit.SECONDS))
+      assertEquals(com.example.audio.AudioEngineStatus.COMPLETED, engine.state.value.status)
+      assertEquals("clip-1", engine.state.value.activeClipId)
+      assertEquals("Piano Clip", engine.state.value.activeClipTitle)
+      assertTrue("All PCM samples must be written to AudioTrack", writtenShortsCount >= noteBuf.pcmSamples.size)
+      assertEquals(0.65f, lastVolume, 0.01f)
+      assertTrue(playCount >= 1)
+      assertTrue(stopCount >= 1)
+      assertTrue(releaseCount >= 1)
+
+      // 3. Looping float clip supports pause, resume, seekTo, setVolume, and stop
+      val longClip = FloatArray(44_100) { idx ->
+        kotlin.math.sin(2.0 * kotlin.math.PI * 440.0 * idx / 44_100.0).toFloat() * 0.5f
+      }
+      engine.playFloatSamples(
+        samples = longClip,
+        sampleRate = 44_100,
+        channelCount = 1,
+        clipId = "loop-1",
+        title = "440Hz Tone",
+        looping = true,
+      )
+
+      var waitPlayingTries = 0
+      while (engine.state.value.status != com.example.audio.AudioEngineStatus.PLAYING && waitPlayingTries < 60) {
+        kotlinx.coroutines.delay(15L)
+        waitPlayingTries++
+      }
+      assertEquals(com.example.audio.AudioEngineStatus.PLAYING, engine.state.value.status)
+      assertTrue(engine.state.value.isLooping)
+
+      engine.pause()
+      assertEquals(com.example.audio.AudioEngineStatus.PAUSED, engine.state.value.status)
+      assertTrue(pauseCount >= 1)
+
+      engine.seekTo(500L)
+      assertEquals(500L, engine.state.value.positionMs)
+      assertTrue(flushCount >= 1)
+
+      engine.setVolume(0.4f)
+      assertEquals(0.4f, engine.state.value.volume, 0.01f)
+      assertEquals(0.4f, lastVolume, 0.01f)
+
+      engine.resume()
+      assertEquals(com.example.audio.AudioEngineStatus.PLAYING, engine.state.value.status)
+
+      engine.stop()
+      assertEquals(com.example.audio.AudioEngineStatus.IDLE, engine.state.value.status)
+      assertEquals(0L, engine.state.value.positionMs)
+    } finally {
+      engine.release()
+      tempDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `music prompt generator card accepts prompt text switches API engines and triggers generate button`() {
+    val promptState = androidx.compose.runtime.mutableStateOf("")
+    val engineState = androidx.compose.runtime.mutableStateOf(com.example.ui.GenerationEngine.HF_MUSICGEN)
+    val isGeneratingState = androidx.compose.runtime.mutableStateOf(false)
+    var generatedPromptSnapshot = ""
+    var generatedEngineSnapshot: com.example.ui.GenerationEngine? = null
+    var generateCallCount = 0
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        com.example.ui.components.MusicPromptGeneratorCard(
+          promptInput = promptState.value,
+          selectedEngine = engineState.value,
+          isGenerating = isGeneratingState.value,
+          errorMessage = null,
+          onPromptChanged = { promptState.value = it },
+          onSelectEngine = { engineState.value = it },
+          onApplyPreset = { promptState.value = it },
+          onGenerateClick = {
+            generateCallCount++
+            generatedPromptSnapshot = promptState.value
+            generatedEngineSnapshot = engineState.value
+          },
+        )
+      }
+    }
+
+    composeTestRule.onNodeWithTag("music_prompt_generator_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("music_prompt_generate_button").assertIsNotEnabled()
+
+    // Apply preset then clear it
+    composeTestRule.onNodeWithTag("music_prompt_preset_0").performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(promptState.value.isNotBlank())
+    composeTestRule.onNodeWithTag("music_prompt_clear_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("", promptState.value)
+
+    // Switch API engine & type custom music prompt
+    composeTestRule.onNodeWithTag("engine_chip_audioldm").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(com.example.ui.GenerationEngine.HF_AUDIO_LDM, engineState.value)
+
+    composeTestRule.onNodeWithTag("music_prompt_input_field")
+      .performTextInput("Atmospheric cyberpunk synth bass 118 BPM")
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("music_prompt_generate_button")
+      .assertIsEnabled()
+      .performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals(1, generateCallCount)
+    assertEquals("Atmospheric cyberpunk synth bass 118 BPM", generatedPromptSnapshot)
+    assertEquals(com.example.ui.GenerationEngine.HF_AUDIO_LDM, generatedEngineSnapshot)
+  }
+
+  @Test
+  fun `playback control bar manages play pause and stop states for generated track playback`() {
+    val isPlaying = androidx.compose.runtime.mutableStateOf(false)
+    val positionMs = androidx.compose.runtime.mutableStateOf(0L)
+    var playClicks = 0
+    var pauseClicks = 0
+    var stopClicks = 0
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        com.example.ui.components.PlaybackControlBar(
+          isPlaying = isPlaying.value,
+          isPreparing = false,
+          hasTrack = true,
+          positionMs = positionMs.value,
+          onPlay = {
+            playClicks++
+            isPlaying.value = true
+            if (positionMs.value == 0L) positionMs.value = 3_500L
+          },
+          onPause = {
+            pauseClicks++
+            isPlaying.value = false
+          },
+          onStop = {
+            stopClicks++
+            isPlaying.value = false
+            positionMs.value = 0L
+          },
+        )
+      }
+    }
+
+    // 1. Initially stopped: Play enabled, Pause & Stop disabled
+    composeTestRule.onNodeWithTag("playback_control_bar").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("playback_play_button").assertIsEnabled()
+    composeTestRule.onNodeWithTag("playback_pause_button").assertIsNotEnabled()
+    composeTestRule.onNodeWithTag("playback_stop_button").assertIsNotEnabled()
+
+    // 2. Click Play -> Playing state: Play disabled, Pause & Stop enabled
+    composeTestRule.onNodeWithTag("playback_play_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(1, playClicks)
+    composeTestRule.onNodeWithTag("playback_play_button").assertIsNotEnabled()
+    composeTestRule.onNodeWithTag("playback_pause_button").assertIsEnabled()
+    composeTestRule.onNodeWithTag("playback_stop_button").assertIsEnabled()
+
+    // 3. Click Pause -> Paused state at 3.5s: Play & Stop enabled, Pause disabled
+    composeTestRule.onNodeWithTag("playback_pause_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(1, pauseClicks)
+    composeTestRule.onNodeWithTag("playback_play_button").assertIsEnabled()
+    composeTestRule.onNodeWithTag("playback_pause_button").assertIsNotEnabled()
+    composeTestRule.onNodeWithTag("playback_stop_button").assertIsEnabled()
+
+    // 4. Click Stop -> Stopped state reset to 0ms: Play enabled, Pause & Stop disabled
+    composeTestRule.onNodeWithTag("playback_stop_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(1, stopClicks)
+    assertEquals(0L, positionMs.value)
+    composeTestRule.onNodeWithTag("playback_play_button").assertIsEnabled()
+    composeTestRule.onNodeWithTag("playback_pause_button").assertIsNotEnabled()
+    composeTestRule.onNodeWithTag("playback_stop_button").assertIsNotEnabled()
+  }
+
+  @Test
+  fun `room track history database persists generated tracks filters searches increments play counts and clears cleanly`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.example.data.local.SonicForgeDatabase::class.java,
+    ).allowMainThreadQueries().build()
+
+    val tempDir = File(context.cacheDir, "history_repo_test_${System.currentTimeMillis()}")
+    tempDir.mkdirs()
+
+    try {
+      val repo = com.example.data.TrackHistoryRepository(
+        historyDao = db.trackHistoryDao(),
+        trackDao = db.generatedTrackDao(),
+      )
+
+      val pianoFile = File(tempDir, "piano_take.wav").apply { writeBytes(ByteArray(128) { 1 }) }
+      val guitarFile = File(tempDir, "guitar_take.wav").apply { writeBytes(ByteArray(128) { 2 }) }
+      val promptFile = File(tempDir, "cyberpunk_prompt.wav").apply { writeBytes(ByteArray(128) { 3 }) }
+
+      val pianoTrack = com.example.model.GeneratedTrack(
+        id = "track-piano-1",
+        title = "Midnight Grand Piano",
+        prompt = "Concert Grand • Pop Classic • 120 BPM",
+        filePath = pianoFile.absolutePath,
+        durationMs = 8_000L,
+        bpm = 120,
+        musicalKey = "C Major",
+        genre = "Piano Studio",
+        fileSizeBytes = pianoFile.length(),
+        waveformPeaks = listOf(0.4f, 0.7f, 0.5f),
+        sourceLabel = "Piano Studio",
+        createdAtEpochMs = 1_000L,
+      )
+      val guitarTrack = com.example.model.GeneratedTrack(
+        id = "track-guitar-1",
+        title = "Sunset Acoustic Strum",
+        prompt = "Steel Acoustic • C-G-Am-F • 110 BPM",
+        filePath = guitarFile.absolutePath,
+        durationMs = 9_000L,
+        bpm = 110,
+        musicalKey = "G Major",
+        genre = "Guitar Studio",
+        fileSizeBytes = guitarFile.length(),
+        waveformPeaks = listOf(0.5f, 0.8f, 0.4f),
+        sourceLabel = "Guitar Studio",
+        createdAtEpochMs = 2_000L,
+      )
+      val promptTrack = com.example.model.GeneratedTrack(
+        id = "track-prompt-1",
+        title = "Neon Synthwave Pulse",
+        prompt = "Retro cyberpunk synthwave bassline 124 BPM",
+        filePath = promptFile.absolutePath,
+        durationMs = 10_000L,
+        bpm = 124,
+        musicalKey = "A Minor",
+        genre = "Synthwave",
+        fileSizeBytes = promptFile.length(),
+        waveformPeaks = listOf(0.6f, 0.9f, 0.5f),
+        sourceLabel = "HF MusicGen",
+        createdAtEpochMs = 3_000L,
+      )
+
+      repo.recordGeneratedTrack(pianoTrack, instrumentType = com.example.data.local.TrackHistoryTypes.PIANO)
+      repo.recordGeneratedTrack(guitarTrack, instrumentType = com.example.data.local.TrackHistoryTypes.GUITAR)
+      repo.recordGeneratedTrack(promptTrack, instrumentType = com.example.data.local.TrackHistoryTypes.PROMPT)
+
+      val all = repo.allHistoryFlow.first()
+      assertEquals(3, all.size)
+      assertEquals("track-prompt-1", all.first().trackId) // newest first
+      assertTrue(all.all { it.fileExists })
+
+      // Filter by instrument type
+      val pianoOnly = repo.observeFilteredHistory(
+        instrumentType = com.example.data.local.TrackHistoryTypes.PIANO,
+      ).first()
+      assertEquals(1, pianoOnly.size)
+      assertEquals("Midnight Grand Piano", pianoOnly.first().title)
+
+      // Search by prompt text
+      val searchResults = repo.observeFilteredHistory(query = "cyberpunk").first()
+      assertEquals(1, searchResults.size)
+      assertEquals("track-prompt-1", searchResults.first().trackId)
+
+      // Record playback increments play count & records timestamp
+      repo.recordTrackPlayed("track-piano-1")
+      repo.recordTrackPlayed("track-piano-1")
+      val updatedPiano = db.trackHistoryDao().getByTrackId("track-piano-1")
+      org.junit.Assert.assertNotNull(updatedPiano)
+      assertEquals(2, updatedPiano!!.playCount)
+      assertTrue(updatedPiano.lastPlayedAtEpochMs > 0L)
+
+      // Sync title on rename
+      repo.syncTrackTitle("track-guitar-1", "Golden Hour Folk Guitar")
+      val renamedGuitar = db.trackHistoryDao().getByTrackId("track-guitar-1")
+      assertEquals("Golden Hour Folk Guitar", renamedGuitar?.title)
+
+      // Delete individual entry
+      repo.deleteHistoryEntry(updatedPiano.id)
+      assertEquals(2, repo.historyCountFlow.first())
+
+      // Clear all history
+      repo.clearAllHistory()
+      assertEquals(0, repo.historyCountFlow.first())
+
+      // Backfill populates history from existing generated_tracks table when history is empty
+      db.generatedTrackDao().insertTrack(
+        com.example.data.local.GeneratedTrackEntity(
+          id = promptTrack.id,
+          title = promptTrack.title,
+          prompt = promptTrack.prompt,
+          filePath = promptTrack.filePath,
+          durationMs = promptTrack.durationMs,
+          bpm = promptTrack.bpm,
+          musicalKey = promptTrack.musicalKey,
+          genre = promptTrack.genre,
+          fileSizeBytes = promptTrack.fileSizeBytes,
+          waveformPeaksCsv = "0.6,0.9,0.5",
+          sourceLabel = promptTrack.sourceLabel,
+          createdAtEpochMs = promptTrack.createdAtEpochMs,
+        ),
+      )
+      repo.backfillFromExistingTracksIfEmpty()
+      val backfilled = repo.allHistoryFlow.first()
+      assertEquals(1, backfilled.size)
+      assertEquals("track-prompt-1", backfilled.first().trackId)
+    } finally {
+      db.close()
+      tempDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `track history card renders past creations filters by source triggers play reuse delete and clear confirmation`() {
+    val itemsState = androidx.compose.runtime.mutableStateOf(
+      listOf(
+        com.example.data.local.TrackHistoryItem(
+          id = "hist-1",
+          trackId = "t-1",
+          title = "Warm Rhodes Chords",
+          prompt = "Rhodes EP • Neo Soul • 96 BPM",
+          filePath = "/tmp/rhodes.wav",
+          durationMs = 8_000L,
+          bpm = 96,
+          genre = "Piano Studio",
+          instrumentType = com.example.data.local.TrackHistoryTypes.PIANO,
+          engineOrSource = "Piano Studio",
+          createdAtEpochMs = 1_700_000_000_000L,
+          lastPlayedAtEpochMs = 1_700_000_005_000L,
+          playCount = 3,
+          fileExists = true,
+        ),
+        com.example.data.local.TrackHistoryItem(
+          id = "hist-2",
+          trackId = "t-2",
+          title = "Cyberpunk Bassline",
+          prompt = "Dark synthwave bassline 124 BPM",
+          filePath = "/tmp/bass.wav",
+          durationMs = 10_000L,
+          bpm = 124,
+          genre = "Synthwave",
+          instrumentType = com.example.data.local.TrackHistoryTypes.PROMPT,
+          engineOrSource = "HF MusicGen",
+          createdAtEpochMs = 1_700_000_010_000L,
+          lastPlayedAtEpochMs = 0L,
+          playCount = 1,
+          fileExists = true,
+        ),
+      ),
+    )
+    val filterState = androidx.compose.runtime.mutableStateOf(com.example.data.local.TrackHistoryTypes.ALL)
+    val queryState = androidx.compose.runtime.mutableStateOf("")
+    var playedItemId: String? = null
+    var reusedPrompt: String? = null
+    var deletedEntryId: String? = null
+    var clearedAll = false
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        androidx.compose.foundation.layout.Column(
+          modifier = androidx.compose.ui.Modifier.verticalScroll(
+            androidx.compose.foundation.rememberScrollState(),
+          ),
+        ) {
+          com.example.ui.components.TrackHistoryCard(
+            historyItems = itemsState.value,
+            totalHistoryCount = itemsState.value.size,
+            selectedTypeFilter = filterState.value,
+            searchQuery = queryState.value,
+            currentTrackId = null,
+            isPlaying = false,
+            onSelectTypeFilter = { filterState.value = it },
+            onSearchQueryChanged = { queryState.value = it },
+            onPlayHistoryItem = { playedItemId = it.id },
+            onReusePrompt = { reusedPrompt = it },
+            onDeleteHistoryItem = { deletedEntryId = it },
+            onClearAllHistory = {
+              clearedAll = true
+              itemsState.value = emptyList()
+            },
+          )
+        }
+      }
+    }
+
+    composeTestRule.onNodeWithTag("track_history_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("history_count_badge").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("history_entry_hist-1").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("history_plays_hist-1").assertIsDisplayed()
+
+    // Filter chip & search input
+    composeTestRule.onNodeWithTag("history_filter_piano").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(com.example.data.local.TrackHistoryTypes.PIANO, filterState.value)
+
+    composeTestRule.onNodeWithTag("history_search_input").performScrollTo().performTextInput("Rhodes")
+    composeTestRule.waitForIdle()
+    assertEquals("Rhodes", queryState.value)
+
+    // Play, Reuse Prompt, Delete
+    composeTestRule.onNodeWithTag("history_play_hist-1").performScrollTo().performClick()
+    assertEquals("hist-1", playedItemId)
+
+    composeTestRule.onNodeWithTag("history_reuse_hist-2").performScrollTo().performClick()
+    assertEquals("Dark synthwave bassline 124 BPM", reusedPrompt)
+
+    composeTestRule.onNodeWithTag("history_delete_hist-2").performScrollTo().performClick()
+    assertEquals("hist-2", deletedEntryId)
+
+    // Clear history confirmation dialog
+    composeTestRule.onNodeWithTag("history_clear_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("history_confirm_clear_button").performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(clearedAll)
+    composeTestRule.onNodeWithTag("history_empty_state").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `fixed piano guitar and drum studio pages support quick chords decoupled progression builder muted strings and live drum pad takes`() {
+    // 1. Verify fractional-delay Karplus-Strong guitar synthesis at high fret produces valid audible audio
+    val highFretSamples = com.example.audio.InstrumentSynthDsp.synthesizeGuitarStringSamples(
+      midiNote = 69, // A4 (440 Hz, High E fret 5)
+      durationSec = 0.6,
+      voice = com.example.audio.GuitarVoice.ACOUSTIC_STEEL,
+    )
+    assertTrue(highFretSamples.isNotEmpty())
+    assertTrue(highFretSamples.all { it.isFinite() })
+    val peakGuitar = highFretSamples.maxOf { kotlin.math.abs(it) }
+    assertTrue("Synthesized guitar string should be audible (peak=$peakGuitar)", peakGuitar > 0.15f)
+
+    // 2. Verify live drum pad take synthesis renders audible PCM buffer
+    val drumTakeBuf = com.example.audio.InstrumentSynthDsp.synthesizeDrumPadTakeToBuffer(
+      kit = com.example.audio.DrumKitPreset.TR_808,
+      recordedHits = listOf(
+        com.example.audio.RecordedDrumHit(com.example.audio.DrumPadVoice.KICK, 0L),
+        com.example.audio.RecordedDrumHit(com.example.audio.DrumPadVoice.SNARE, 500L),
+        com.example.audio.RecordedDrumHit(com.example.audio.DrumPadVoice.CLOSED_HAT, 750L),
+      ),
+      bpm = 120,
+    )
+    assertTrue(drumTakeBuf.pcmSamples.isNotEmpty())
+    assertTrue(drumTakeBuf.durationMs >= 2_000L)
+    val peakDrum = drumTakeBuf.pcmSamples.maxOf { kotlin.math.abs(it.toInt()) }
+    assertTrue("Synthesized drum pad take should have strong audible peaks (peak=$peakDrum)", peakDrum > 4_000)
+
+    // 3. Verify Piano, Guitar, and Drum UI fixes
+    var playedQuickChord: IntArray? = null
+    val guitarState = androidx.compose.runtime.mutableStateOf(
+      com.example.ui.GuitarStudioState(
+        selectedChord = com.example.audio.GuitarChordShape.D_MIN, // has muted strings 0 & 1
+        chordSequence = listOf(
+          com.example.audio.GuitarChordShape.C_MAJ,
+          com.example.audio.GuitarChordShape.G_MAJ,
+        ),
+      ),
+    )
+    var appliedPreset: com.example.audio.GuitarProgressionPreset? = null
+    val drumState = androidx.compose.runtime.mutableStateOf(
+      com.example.ui.DrumStudioState(
+        isRecordingPads = false,
+        recordedHits = listOf(
+          com.example.audio.RecordedDrumHit(com.example.audio.DrumPadVoice.KICK, 0L),
+        ),
+      ),
+    )
+    var previewedDrumTake = false
+    var clearedDrumTake = false
+
+    val activePage = androidx.compose.runtime.mutableStateOf(0)
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        androidx.compose.foundation.layout.Column(
+          modifier = androidx.compose.ui.Modifier.verticalScroll(
+            androidx.compose.foundation.rememberScrollState(),
+          ),
+        ) {
+          when (activePage.value) {
+            0 -> com.example.ui.components.PianoStudioPage(
+              state = com.example.ui.PianoStudioState(
+                recordedNotes = listOf(
+                  com.example.audio.RecordedNoteEvent(midiNote = 60, offsetMs = 0L),
+                  com.example.audio.RecordedNoteEvent(midiNote = 64, offsetMs = 300L),
+                ),
+              ),
+              onSelectVoice = {},
+              onSelectProgression = {},
+              onShiftOctave = {},
+              onStepBpm = {},
+              onPlayKey = {},
+              onPlayChord = { playedQuickChord = it },
+              onToggleRecording = {},
+              onClearRecording = {},
+              onPreviewPattern = {},
+              onGenerateTrack = {},
+            )
+            1 -> com.example.ui.components.GuitarStudioPage(
+              state = guitarState.value,
+              onSelectVoice = {},
+              onSelectChord = { chord ->
+                guitarState.value = guitarState.value.copy(selectedChord = chord)
+              },
+              onAddChordToSequence = { chord ->
+                guitarState.value = guitarState.value.copy(
+                  chordSequence = guitarState.value.chordSequence + chord,
+                )
+              },
+              onRemoveChordFromSequenceAt = { idx ->
+                guitarState.value = guitarState.value.copy(
+                  chordSequence = guitarState.value.chordSequence.filterIndexed { i, _ -> i != idx },
+                )
+              },
+              onApplyProgressionPreset = { preset ->
+                appliedPreset = preset
+                guitarState.value = guitarState.value.copy(chordSequence = preset.chords)
+              },
+              onSelectStrumStyle = {},
+              onStepBpm = {},
+              onPluckString = { _, _ -> },
+              onStrumChord = {},
+              onToggleRecording = {},
+              onClearRecording = {},
+              onPreviewPattern = {},
+              onGenerateTrack = {},
+            )
+            else -> com.example.ui.components.DrumStudioPage(
+              sequencerState = com.example.audio.StepSequencerState(),
+              metronomeState = com.example.audio.MetronomeState(),
+              drumState = drumState.value,
+              onSelectDrumKit = {},
+              onTriggerDrumPad = {},
+              onToggleDrumPadRecording = {
+                drumState.value = drumState.value.copy(isRecordingPads = !drumState.value.isRecordingPads)
+              },
+              onClearDrumPadRecording = { clearedDrumTake = true },
+              onPreviewDrumPadTake = { previewedDrumTake = true },
+              onToggleSequencerStep = { _, _ -> },
+              onToggleSequencerPlayStop = {},
+              onClearSequencerPattern = {},
+              onApplySequencerPreset = {},
+              onStepSequencerBpm = {},
+              onToggleSequencerBpmSync = {},
+              onCycleSequencerSwing = {},
+              onGenerateDrumTrack = {},
+              onToggleMetronomePlayStop = {},
+              onStepMetronomeBpm = {},
+              onToggleMetronomeBpmSync = {},
+              onMetronomeVolumeChange = {},
+              onMetronomePitchHzChange = {},
+              onSelectMetronomeToneStyle = {},
+              onSelectMetronomeTimeSignature = {},
+              onToggleMetronomeAccentDownbeat = {},
+              onTapMetronomeTempo = {},
+            )
+          }
+        }
+      }
+    }
+
+    // Piano: quick chord pad + recorded trail
+    composeTestRule.onNodeWithTag("piano_quick_chord_0").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    org.junit.Assert.assertNotNull(playedQuickChord)
+    assertTrue(playedQuickChord!!.size >= 3)
+    composeTestRule.onNodeWithTag("piano_recorded_trail").performScrollTo().assertIsDisplayed()
+
+    // Guitar: muted string X badge on Dm, decoupled chord audition vs progression builder
+    activePage.value = 1
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("guitar_muted_string_0").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("guitar_chord_g_maj").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(com.example.audio.GuitarChordShape.G_MAJ, guitarState.value.selectedChord)
+    assertEquals(2, guitarState.value.chordSequence.size) // clicking G did NOT delete G from sequence!
+
+    composeTestRule.onNodeWithTag("guitar_add_to_seq_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(3, guitarState.value.chordSequence.size)
+
+    composeTestRule.onNodeWithTag("guitar_seq_remove_0").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(2, guitarState.value.chordSequence.size)
+
+    composeTestRule.onNodeWithTag("generate_guitar_track_button").performScrollTo()
+    composeTestRule.onNodeWithTag("guitar_preset_minor").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(com.example.audio.GuitarProgressionPreset.INDIE_MINOR, appliedPreset)
+    assertEquals(4, guitarState.value.chordSequence.size)
+
+    // Drums: live pad recording controls
+    activePage.value = 2
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("drum_record_pads_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(drumState.value.isRecordingPads)
+
+    composeTestRule.onNodeWithTag("drum_preview_pads_button").performScrollTo().performClick()
+    assertTrue(previewedDrumTake)
+
+    composeTestRule.onNodeWithTag("drum_clear_pads_button").performScrollTo().performClick()
+    assertTrue(clearedDrumTake)
+  }
 }
+

@@ -7,36 +7,57 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.TrackAutoTagResult
 import com.example.audio.AudioDownloadProgress
+import com.example.audio.AudioEngine
+import com.example.audio.AudioEngineState
 import com.example.audio.AudioExportBitrateOption
 import com.example.audio.AudioExportConfig
 import com.example.audio.AudioExportFormat
 import com.example.audio.AudioPlaybackState
 import com.example.audio.AudioPlayerController
+import com.example.audio.DrumKitPreset
+import com.example.audio.DrumPadVoice
 import com.example.audio.EqPreset
+import com.example.audio.GuitarChordShape
+import com.example.audio.GuitarStrumStyle
+import com.example.audio.GuitarVoice
 import com.example.audio.HfMusicSpace
+import com.example.audio.InstrumentSynthDsp
+import com.example.audio.LiveInstrumentAudioEngine
 import com.example.audio.LoudnessTarget
 import com.example.audio.MetronomeEngine
 import com.example.audio.MetronomeState
 import com.example.audio.MetronomeTimeSignature
 import com.example.audio.MetronomeTone
+import com.example.audio.MixStemSpec
+import com.example.audio.PianoProgressionPreset
+import com.example.audio.PianoVoice
 import com.example.audio.RawBufferDiagnostics
+import com.example.audio.RecordedNoteEvent
 import com.example.audio.ReverbEngineMode
 import com.example.audio.ReverbPreset
 import com.example.audio.SequencerLane
 import com.example.audio.SequencerPreset
+import com.example.audio.StepSequencerDsp
 import com.example.audio.StepSequencerEngine
 import com.example.audio.StepSequencerState
+import com.example.audio.StudioSoundResource
 import com.example.audio.TrackAudioEnvelope
 import com.example.audio.VolumeEnvelopeDsp
 import com.example.audio.WaveformInteractionMode
+import com.example.audio.GuitarProgressionPreset
+import com.example.audio.RecordedDrumHit
 import com.example.data.GeneratedTrackRepository
 import com.example.data.StudioProjectRepository
 import com.example.data.ThemePreferencesRepository
+import com.example.data.TrackHistoryRepository
+import com.example.data.local.TrackHistoryItem
+import com.example.data.local.TrackHistoryTypes
 import com.example.model.BulkRenameConfig
 import com.example.model.GeneratedTrack
 import com.example.model.Playlist
 import com.example.model.StudioProject
 import com.example.ui.theme.ThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -49,7 +70,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class NotificationPermissionStatus {
   GRANTED,
@@ -81,7 +104,20 @@ data class SonicForgeUiState(
   val trimmingTrack: GeneratedTrack? = null,
   val exportingTrack: GeneratedTrack? = null,
   val promptInput: String = "",
-  val selectedEngine: GenerationEngine = GenerationEngine.HF_AUDIO_LDM,
+  val selectedEngine: GenerationEngine = GenerationEngine.HF_MUSICGEN,
+  val activeDestination: StudioDestination = StudioDestination.STUDIO,
+  val studioSectionTab: StudioSectionTab = StudioSectionTab.RESOURCES,
+  val pianoState: PianoStudioState = PianoStudioState(),
+  val guitarState: GuitarStudioState = GuitarStudioState(),
+  val drumState: DrumStudioState = DrumStudioState(),
+  val mergeMixer: MergeMixerState = MergeMixerState(),
+  val trackHistory: List<TrackHistoryItem> = emptyList(),
+  val totalHistoryCount: Int = 0,
+  val historyTypeFilter: String = TrackHistoryTypes.ALL,
+  val historySearchQuery: String = "",
+  val isQuickSavingMp3: Boolean = false,
+  val quickMp3StatusMessage: String? = null,
+  val generatingResourceId: String? = null,
   val themeMode: ThemeMode = ThemeMode.DARK,
   val isInitializing: Boolean = true,
   val isGenerating: Boolean = false,
@@ -118,6 +154,7 @@ data class SonicForgeUiState(
   val showSaveProjectDialog: Boolean = false,
   val isSavingProject: Boolean = false,
   val projectStatusMessage: String? = null,
+  val clipAudioState: AudioEngineState = AudioEngineState(),
 ) {
   val selectedTracksForBulkRename: List<GeneratedTrack>
     get() = tracks.filter { it.id in selectedTrackIds }
@@ -181,20 +218,56 @@ private data class ProjectUiBundle(
   val showSaveProjectDialog: Boolean,
   val isSavingProject: Boolean,
   val projectStatusMessage: String?,
+  val clipAudioState: AudioEngineState = AudioEngineState(),
+)
+
+private data class StudioInstrumentsBundle(
+  val activeDestination: StudioDestination,
+  val studioSectionTab: StudioSectionTab,
+  val pianoState: PianoStudioState,
+  val guitarState: GuitarStudioState,
+  val drumState: DrumStudioState,
+  val mergeMixer: MergeMixerState,
+  val isQuickSavingMp3: Boolean,
+  val quickMp3StatusMessage: String?,
+  val generatingResourceId: String?,
+  val trackHistory: List<TrackHistoryItem>,
+  val totalHistoryCount: Int,
+  val historyTypeFilter: String,
+  val historySearchQuery: String,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SonicForgeViewModel(application: Application) : AndroidViewModel(application) {
 
   private val repository = GeneratedTrackRepository(application.applicationContext)
+  private val historyRepository = TrackHistoryRepository(application.applicationContext)
   private val projectRepository = StudioProjectRepository(application.applicationContext)
   private val themePreferences = ThemePreferencesRepository(application.applicationContext)
   private val playerController = AudioPlayerController.getInstance(application.applicationContext)
   private val stepSequencerEngine = StepSequencerEngine()
   private val metronomeEngine = MetronomeEngine()
+  private val studioClipEngine = AudioEngine()
+  private val liveInstrumentEngine = LiveInstrumentAudioEngine(studioClipEngine)
+  val clipAudioEngineState: StateFlow<AudioEngineState> = studioClipEngine.state
 
   private val _promptInput = MutableStateFlow("")
-  private val _selectedEngine = MutableStateFlow(GenerationEngine.HF_AUDIO_LDM)
+  private val _selectedEngine = MutableStateFlow(GenerationEngine.HF_MUSICGEN)
+  private val _activeDestination = MutableStateFlow(StudioDestination.STUDIO)
+  private val _studioSectionTab = MutableStateFlow(StudioSectionTab.RESOURCES)
+  private val _pianoState = MutableStateFlow(PianoStudioState())
+  private val _guitarState = MutableStateFlow(GuitarStudioState())
+  private val _drumState = MutableStateFlow(DrumStudioState())
+  private val _mergeMixerState = MutableStateFlow(MergeMixerState())
+  private val _historyTypeFilter = MutableStateFlow(TrackHistoryTypes.ALL)
+  private val _historySearchQuery = MutableStateFlow("")
+  private val _isQuickSavingMp3 = MutableStateFlow(false)
+  private val _quickMp3StatusMessage = MutableStateFlow<String?>(null)
+  private val _generatingResourceId = MutableStateFlow<String?>(null)
+  private var pianoRecStartMs: Long = 0L
+  private var guitarRecStartMs: Long = 0L
+  private var drumRecStartMs: Long = 0L
+  private var guitarCellFlashJob: Job? = null
   private val _selectedCategory = MutableStateFlow(GeneratedTrackRepository.ALL_CATEGORIES)
   private val _showFavoritesOnly = MutableStateFlow(false)
   private val _searchQuery = MutableStateFlow("")
@@ -369,18 +442,86 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
   private val categoriesFlow = repository.categoriesFlow
 
   private val projectUiBundleFlow = combine(
-    projectRepository.projectsFlow,
-    _activeProjectId,
-    _showSaveProjectDialog,
-    _isSavingProject,
-    _projectStatusMessage,
-  ) { projects, activeId, showDialog, isSaving, statusMsg ->
-    ProjectUiBundle(
-      projects = projects,
-      activeProjectId = activeId?.takeIf { id -> projects.any { it.id == id } },
-      showSaveProjectDialog = showDialog,
-      isSavingProject = isSaving,
-      projectStatusMessage = statusMsg,
+    combine(
+      projectRepository.projectsFlow,
+      _activeProjectId,
+      _showSaveProjectDialog,
+      _isSavingProject,
+      _projectStatusMessage,
+    ) { projects, activeId, showDialog, isSaving, statusMsg ->
+      ProjectUiBundle(
+        projects = projects,
+        activeProjectId = activeId?.takeIf { id -> projects.any { it.id == id } },
+        showSaveProjectDialog = showDialog,
+        isSavingProject = isSaving,
+        projectStatusMessage = statusMsg,
+      )
+    },
+    studioClipEngine.state,
+  ) { bundle, clipAudioState ->
+    bundle.copy(clipAudioState = clipAudioState)
+  }
+
+  private val filteredHistoryFlow = combine(
+    _historyTypeFilter,
+    _historySearchQuery,
+  ) { typeFilter, query ->
+    typeFilter to query
+  }.flatMapLatest { (typeFilter, query) ->
+    historyRepository.observeFilteredHistory(
+      instrumentType = typeFilter,
+      query = query,
+    )
+  }
+
+  private val historyUiBundleFlow = combine(
+    filteredHistoryFlow,
+    historyRepository.historyCountFlow,
+    _historyTypeFilter,
+    _historySearchQuery,
+  ) { items, count, typeFilter, query ->
+    listOf(items, count, typeFilter, query)
+  }
+
+  private val navAndInstrumentsBundleFlow = combine(
+    _activeDestination,
+    _studioSectionTab,
+    _pianoState,
+    _guitarState,
+    _mergeMixerState,
+  ) { dest, tab, piano, guitar, merge ->
+    listOf(dest, tab, piano, guitar, merge)
+  }
+
+  private val quickStatusBundleFlow = combine(
+    _isQuickSavingMp3,
+    _quickMp3StatusMessage,
+    _generatingResourceId,
+    _drumState,
+  ) { savingMp3, statusMsg, resId, drumState ->
+    listOf(savingMp3, statusMsg, resId, drumState)
+  }
+
+  private val studioInstrumentsBundleFlow = combine(
+    navAndInstrumentsBundleFlow,
+    quickStatusBundleFlow,
+    historyUiBundleFlow,
+  ) { navList, statusList, historyList ->
+    @Suppress("UNCHECKED_CAST")
+    StudioInstrumentsBundle(
+      activeDestination = navList[0] as StudioDestination,
+      studioSectionTab = navList[1] as StudioSectionTab,
+      pianoState = navList[2] as PianoStudioState,
+      guitarState = navList[3] as GuitarStudioState,
+      drumState = statusList[3] as DrumStudioState,
+      mergeMixer = navList[4] as MergeMixerState,
+      isQuickSavingMp3 = statusList[0] as Boolean,
+      quickMp3StatusMessage = statusList[1] as String?,
+      generatingResourceId = statusList[2] as String?,
+      trackHistory = historyList[0] as List<TrackHistoryItem>,
+      totalHistoryCount = historyList[1] as Int,
+      historyTypeFilter = historyList[2] as String,
+      historySearchQuery = historyList[3] as String,
     )
   }
 
@@ -416,6 +557,7 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
       stepSequencerEngine.state,
       metronomeEngine.state,
       projectUiBundleFlow,
+      studioInstrumentsBundleFlow,
     ) { values ->
       @Suppress("UNCHECKED_CAST")
       val allTracks = values[1] as List<GeneratedTrack>
@@ -428,7 +570,9 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
       val bulkRenameBundle = values[25] as BulkRenameUiBundle
       val aiAndDownloadBundle = values[26] as AiAndDownloadUiBundle
       val projectBundle = values[29] as ProjectUiBundle
+      val studioBundle = values[30] as StudioInstrumentsBundle
       val validTrackIds = allTracks.map { it.id }.toSet()
+      val sanitizedMergeIds = studioBundle.mergeMixer.selectedTrackIds.intersect(validTrackIds)
       SonicForgeUiState(
         tracks = values[0] as List<GeneratedTrack>,
         allTracks = allTracks,
@@ -447,6 +591,19 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
         exportingTrack = values[9] as GeneratedTrack?,
         promptInput = values[10] as String,
         selectedEngine = values[11] as GenerationEngine,
+        activeDestination = studioBundle.activeDestination,
+        studioSectionTab = studioBundle.studioSectionTab,
+        pianoState = studioBundle.pianoState,
+        guitarState = studioBundle.guitarState,
+        drumState = studioBundle.drumState,
+        mergeMixer = studioBundle.mergeMixer.copy(selectedTrackIds = sanitizedMergeIds),
+        trackHistory = studioBundle.trackHistory,
+        totalHistoryCount = studioBundle.totalHistoryCount,
+        historyTypeFilter = studioBundle.historyTypeFilter,
+        historySearchQuery = studioBundle.historySearchQuery,
+        isQuickSavingMp3 = studioBundle.isQuickSavingMp3,
+        quickMp3StatusMessage = studioBundle.quickMp3StatusMessage,
+        generatingResourceId = studioBundle.generatingResourceId,
         themeMode = visualPrefsBundle.themeMode,
         isInitializing = values[13] as Boolean,
         isGenerating = values[14] as Boolean,
@@ -483,6 +640,7 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
         showSaveProjectDialog = projectBundle.showSaveProjectDialog,
         isSavingProject = projectBundle.isSavingProject,
         projectStatusMessage = projectBundle.projectStatusMessage,
+        clipAudioState = projectBundle.clipAudioState,
       )
     }.stateIn(
       scope = viewModelScope,
@@ -511,6 +669,7 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
     viewModelScope.launch {
       try {
         val loaded = repository.ensureSeeded()
+        historyRepository.backfillFromExistingTracksIfEmpty()
         playerController.updatePlaylist(loaded)
         loaded.firstOrNull()?.let { firstTrack ->
           if (playerController.state.value.currentTrackId == null) {
@@ -1025,15 +1184,19 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
   fun selectTrack(track: GeneratedTrack, autoPlay: Boolean = true) {
     if (playerController.state.value.currentTrackId == track.id && playerController.state.value.isPrepared) {
       if (autoPlay && !playerController.state.value.isPlaying) {
-        playerController.togglePlayPause()
+        playerController.play()
+        viewModelScope.launch { historyRepository.recordTrackPlayed(track.id) }
       }
       return
     }
     playerController.loadTrack(track, autoPlay = autoPlay)
     refreshBufferDiagnostics(track)
+    if (autoPlay) {
+      viewModelScope.launch { historyRepository.recordTrackPlayed(track.id) }
+    }
   }
 
-  fun togglePlayPause() {
+  fun playTrack() {
     val tracks = uiState.value.allTracks
     val activeId = playerController.state.value.currentTrackId
     val trackToPlay = tracks.firstOrNull { it.id == activeId } ?: tracks.firstOrNull()
@@ -1043,7 +1206,76 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
       playerController.loadTrack(trackToPlay, autoPlay = true)
       refreshBufferDiagnostics(trackToPlay)
     } else {
-      playerController.togglePlayPause()
+      playerController.play()
+    }
+    viewModelScope.launch { historyRepository.recordTrackPlayed(trackToPlay.id) }
+  }
+
+  // --- Room Track History Actions ---
+
+  fun selectHistoryTypeFilter(type: String) {
+    _historyTypeFilter.value = type
+  }
+
+  fun onHistorySearchQueryChanged(query: String) {
+    _historySearchQuery.value = query
+  }
+
+  fun playHistoryItem(item: TrackHistoryItem) {
+    val matching = uiState.value.allTracks.firstOrNull { it.id == item.trackId }
+    if (matching != null) {
+      if (playerController.state.value.currentTrackId == matching.id && playerController.state.value.isPlaying) {
+        pauseTrack()
+      } else {
+        selectTrack(matching, autoPlay = true)
+      }
+      return
+    }
+    viewModelScope.launch {
+      val fromDb = repository.getTrackById(item.trackId)
+      if (fromDb != null) {
+        selectTrack(fromDb, autoPlay = true)
+      } else {
+        _errorMessage.value = "Audio file for \"${item.title}\" is no longer on disk."
+      }
+    }
+  }
+
+  fun reusePromptFromHistory(prompt: String) {
+    val clean = prompt.trim()
+    if (clean.isEmpty()) return
+    _promptInput.value = clean
+    _activeDestination.value = StudioDestination.STUDIO
+    _quickMp3StatusMessage.value = "Loaded prompt from Room history into Music Generator"
+  }
+
+  fun deleteHistoryEntry(entryId: String) {
+    viewModelScope.launch {
+      historyRepository.deleteHistoryEntry(entryId)
+    }
+  }
+
+  fun clearAllTrackHistory() {
+    viewModelScope.launch {
+      historyRepository.clearAllHistory()
+      _quickMp3StatusMessage.value = "Cleared local Room generation history"
+    }
+  }
+
+  fun pauseTrack() {
+    playerController.pause()
+  }
+
+  fun stopTrack() {
+    studioClipEngine.stop()
+    playerController.stopPlayback()
+  }
+
+  fun togglePlayPause() {
+    if (playerController.state.value.isPlaying) {
+      pauseTrack()
+    } else {
+      playTrack()
     }
   }
 
@@ -1736,6 +1968,21 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
     }
   }
 
+  fun renameProject(projectId: String, newName: String) {
+    val cleanName = newName.trim()
+    if (cleanName.isEmpty()) return
+    viewModelScope.launch {
+      try {
+        val renamed = projectRepository.renameProject(projectId, cleanName)
+        if (renamed != null) {
+          _projectStatusMessage.value = "Renamed session to \"${renamed.name}\""
+        }
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to rename studio session."
+      }
+    }
+  }
+
   fun deleteProject(projectId: String) {
     viewModelScope.launch {
       try {
@@ -1750,9 +1997,925 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
     }
   }
 
+  fun selectAudioProject(track: GeneratedTrack) {
+    selectTrack(track, autoPlay = false)
+    val fileName = java.io.File(track.filePath).name
+    _projectStatusMessage.value = "Selected \"${track.title}\" ($fileName)"
+  }
+
+  fun toggleAuditionAudioProject(track: GeneratedTrack) {
+    val currentClipState = studioClipEngine.state.value
+    if (currentClipState.activeClipId == track.id && currentClipState.isPlaying) {
+      studioClipEngine.stop()
+    } else {
+      studioClipEngine.playTrack(track = track, looping = false)
+    }
+  }
+
+  fun renameAudioProject(trackId: String, newTitle: String) {
+    val cleanTitle = newTitle.trim()
+    if (cleanTitle.isEmpty()) return
+    viewModelScope.launch {
+      _errorMessage.value = null
+      try {
+        val playbackSnap = playerController.state.value
+        val wasCurrent = playbackSnap.currentTrackId == trackId
+        val wasPlaying = wasCurrent && playbackSnap.isPlaying
+        val savedPosMs = if (wasCurrent) playbackSnap.positionMs else 0L
+        if (studioClipEngine.state.value.activeClipId == trackId) {
+          studioClipEngine.stop()
+        }
+        val updated = repository.renameTrackAndFile(trackId = trackId, newTitle = cleanTitle)
+        if (wasCurrent) {
+          playerController.loadTrack(
+            track = updated,
+            autoPlay = wasPlaying,
+            initialPositionMs = savedPosMs,
+          )
+          refreshBufferDiagnostics(updated)
+        }
+        val fileName = java.io.File(updated.filePath).name
+        _projectStatusMessage.value = "Renamed to \"${updated.title}\" ($fileName)"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to rename saved audio file."
+      }
+    }
+  }
+
+  fun deleteAudioProject(trackId: String) {
+    val targetTitle = uiState.value.allTracks.firstOrNull { it.id == trackId }?.title
+    if (studioClipEngine.state.value.activeClipId == trackId) {
+      studioClipEngine.stop()
+    }
+    deleteTrack(trackId)
+    _projectStatusMessage.value = if (!targetTitle.isNullOrBlank()) {
+      "Deleted saved audio \"$targetTitle\""
+    } else {
+      "Deleted saved audio file"
+    }
+  }
+
+  // --- Navigation & Multi-Page Studio Controls ---
+
+  fun selectDestination(destination: StudioDestination) {
+    _activeDestination.value = destination
+  }
+
+  fun selectStudioSectionTab(tab: StudioSectionTab) {
+    _studioSectionTab.value = tab
+  }
+
+  fun dismissQuickMp3Status() {
+    _quickMp3StatusMessage.value = null
+  }
+
+  // --- Sound Resource Bank ---
+
+  fun generateFromSoundResource(resource: StudioSoundResource) {
+    if (_isGenerating.value || _generatingResourceId.value != null) return
+    viewModelScope.launch {
+      _generatingResourceId.value = resource.id
+      _errorMessage.value = null
+      try {
+        val result = repository.generateSoundResourceTrack(
+          resource = resource,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = result.diagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = _mergeMixerState.value.selectedTrackIds + result.track.id,
+        )
+        playerController.loadTrack(result.track, autoPlay = true)
+        _quickMp3StatusMessage.value = "Created \"${result.track.title}\" — ready to play or merge"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to generate sound resource."
+      } finally {
+        _generatingResourceId.value = null
+      }
+    }
+  }
+
+  // --- Piano Page Actions ---
+
+  fun selectPianoVoice(voice: PianoVoice) {
+    _pianoState.value = _pianoState.value.copy(selectedVoice = voice)
+  }
+
+  fun selectPianoProgression(progression: PianoProgressionPreset) {
+    _pianoState.value = _pianoState.value.copy(
+      selectedProgression = progression,
+      bpm = progression.defaultBpm,
+    )
+  }
+
+  fun shiftPianoOctave(delta: Int) {
+    val next = (_pianoState.value.baseOctave + delta).coerceIn(2, 5)
+    _pianoState.value = _pianoState.value.copy(baseOctave = next)
+  }
+
+  fun stepPianoBpm(delta: Int) {
+    val next = (_pianoState.value.bpm + delta).coerceIn(55, 180)
+    _pianoState.value = _pianoState.value.copy(bpm = next)
+  }
+
+  fun playPianoKey(midiNote: Int) {
+    val snap = _pianoState.value
+    val voice = snap.selectedVoice
+
+    val now = System.currentTimeMillis()
+    val updatedRecorded = if (snap.isRecording) {
+      if (snap.recordedNotes.isEmpty()) {
+        pianoRecStartMs = now
+      }
+      val offset = (now - pianoRecStartMs).coerceAtLeast(0L)
+      snap.recordedNotes + RecordedNoteEvent(midiNote = midiNote, offsetMs = offset, durationMs = 650L)
+    } else {
+      snap.recordedNotes
+    }
+    _pianoState.update {
+      it.copy(
+        activeMidiNotes = it.activeMidiNotes + midiNote,
+        recordedNotes = updatedRecorded,
+      )
+    }
+
+    // Synthesize off the Main thread and mix polyphonically into live AudioTrack
+    viewModelScope.launch {
+      val samples = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizePianoNoteSamples(
+          midiNote = midiNote,
+          durationSec = 1.15,
+          velocity = 0.88f,
+          voice = voice,
+        )
+      }
+      liveInstrumentEngine.triggerSamples(samples)
+    }
+
+    // Auto-release visual highlight so keys flash cleanly instead of sticking lit forever
+    viewModelScope.launch {
+      delay(240L)
+      _pianoState.update { it.copy(activeMidiNotes = it.activeMidiNotes - midiNote) }
+    }
+  }
+
+  fun playPianoChord(midiNotes: IntArray) {
+    if (midiNotes.isEmpty()) return
+    val snap = _pianoState.value
+    val voice = snap.selectedVoice
+    val noteSet = midiNotes.toSet()
+
+    val now = System.currentTimeMillis()
+    val updatedRecorded = if (snap.isRecording) {
+      if (snap.recordedNotes.isEmpty()) {
+        pianoRecStartMs = now
+      }
+      val baseOffset = (now - pianoRecStartMs).coerceAtLeast(0L)
+      val events = midiNotes.mapIndexed { idx, midi ->
+        RecordedNoteEvent(
+          midiNote = midi,
+          offsetMs = baseOffset + idx * 18L,
+          durationMs = 850L,
+          velocity = if (idx == 0) 0.88f else 0.76f,
+        )
+      }
+      snap.recordedNotes + events
+    } else {
+      snap.recordedNotes
+    }
+
+    _pianoState.update {
+      it.copy(
+        activeMidiNotes = it.activeMidiNotes + noteSet,
+        recordedNotes = updatedRecorded,
+      )
+    }
+
+    viewModelScope.launch {
+      val chordSamples = withContext(Dispatchers.Default) {
+        val durSec = 1.25
+        val total = (durSec * InstrumentSynthDsp.SAMPLE_RATE).toInt()
+        val mix = FloatArray(total)
+        val scale = 0.55f / kotlin.math.sqrt(midiNotes.size.toFloat().coerceAtLeast(1f))
+        midiNotes.forEachIndexed { idx, midi ->
+          val stagger = (idx * 0.018 * InstrumentSynthDsp.SAMPLE_RATE).toInt()
+          val noteBuf = InstrumentSynthDsp.synthesizePianoNoteSamples(
+            midiNote = midi,
+            durationSec = durSec,
+            velocity = if (idx == 0) 0.90f else 0.78f,
+            voice = voice,
+          )
+          val limit = kotlin.math.min(noteBuf.size, total - stagger)
+          for (i in 0 until limit) {
+            mix[stagger + i] += noteBuf[i] * scale
+          }
+        }
+        mix
+      }
+      liveInstrumentEngine.triggerSamples(chordSamples)
+    }
+
+    viewModelScope.launch {
+      delay(300L)
+      _pianoState.update { it.copy(activeMidiNotes = it.activeMidiNotes - noteSet) }
+    }
+  }
+
+  fun togglePianoRecording() {
+    val snap = _pianoState.value
+    if (!snap.isRecording) {
+      pianoRecStartMs = System.currentTimeMillis()
+      _pianoState.value = snap.copy(isRecording = true, recordedNotes = emptyList())
+    } else {
+      _pianoState.value = snap.copy(isRecording = false)
+    }
+  }
+
+  fun clearPianoRecording() {
+    _pianoState.value = _pianoState.value.copy(
+      isRecording = false,
+      recordedNotes = emptyList(),
+      activeMidiNotes = emptySet(),
+    )
+  }
+
+  fun previewPianoPattern() {
+    val snap = _pianoState.value
+    if (snap.isPreviewing) {
+      liveInstrumentEngine.stopPreview()
+      _pianoState.value = snap.copy(isPreviewing = false)
+      return
+    }
+    _pianoState.value = snap.copy(isPreviewing = true)
+    viewModelScope.launch {
+      val buffer = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizePianoTrackToBuffer(
+          voice = snap.selectedVoice,
+          progression = snap.selectedProgression,
+          recordedNotes = snap.recordedNotes,
+          bpm = snap.bpm,
+          bars = 2,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+      }
+      liveInstrumentEngine.playPatternPreview(buffer) {
+        _pianoState.update { it.copy(isPreviewing = false) }
+      }
+    }
+  }
+
+  fun generatePianoTrack() {
+    val snap = _pianoState.value
+    if (snap.isGenerating) return
+    viewModelScope.launch {
+      _pianoState.value = snap.copy(isGenerating = true, isRecording = false)
+      _errorMessage.value = null
+      try {
+        val result = repository.generatePianoTrack(
+          voice = snap.selectedVoice,
+          progression = snap.selectedProgression,
+          recordedNotes = snap.recordedNotes,
+          bpm = snap.bpm,
+          bars = 4,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = result.diagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = _mergeMixerState.value.selectedTrackIds + result.track.id,
+        )
+        playerController.loadTrack(result.track, autoPlay = true)
+        _pianoState.value = _pianoState.value.copy(
+          isGenerating = false,
+          lastGeneratedTrackTitle = result.track.title,
+        )
+        _quickMp3StatusMessage.value = "Generated Piano track \"${result.track.title}\" & saved to History"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to generate piano track."
+        _pianoState.value = _pianoState.value.copy(isGenerating = false)
+      }
+    }
+  }
+
+  // --- Guitar Page Actions ---
+
+  fun selectGuitarVoice(voice: GuitarVoice) {
+    _guitarState.value = _guitarState.value.copy(selectedVoice = voice)
+  }
+
+  fun selectGuitarChord(chord: GuitarChordShape) {
+    _guitarState.update { it.copy(selectedChord = chord) }
+    strumGuitarChord(chord)
+  }
+
+  fun addGuitarChordToSequence(chord: GuitarChordShape) {
+    _guitarState.update { current ->
+      val nextSeq = (current.chordSequence + chord).takeLast(8)
+      current.copy(
+        selectedChord = chord,
+        chordSequence = nextSeq,
+      )
+    }
+  }
+
+  fun removeGuitarChordFromSequenceAt(index: Int) {
+    _guitarState.update { current ->
+      if (current.chordSequence.size <= 1 || index !in current.chordSequence.indices) {
+        current
+      } else {
+        val nextSeq = current.chordSequence.toMutableList().apply { removeAt(index) }
+        current.copy(chordSequence = nextSeq)
+      }
+    }
+  }
+
+  fun applyGuitarProgressionPreset(preset: GuitarProgressionPreset) {
+    val first = preset.chords.firstOrNull() ?: GuitarChordShape.C_MAJ
+    _guitarState.update {
+      it.copy(
+        selectedChord = first,
+        chordSequence = preset.chords,
+      )
+    }
+    strumGuitarChord(first)
+  }
+
+  fun toggleGuitarChordInSequence(chord: GuitarChordShape) {
+    addGuitarChordToSequence(chord)
+  }
+
+  fun selectGuitarStrumStyle(style: GuitarStrumStyle) {
+    _guitarState.value = _guitarState.value.copy(strumStyle = style)
+  }
+
+  fun stepGuitarBpm(delta: Int) {
+    val next = (_guitarState.value.bpm + delta).coerceIn(55, 180)
+    _guitarState.value = _guitarState.value.copy(bpm = next)
+  }
+
+  fun pluckGuitarString(stringIndex: Int, fret: Int) {
+    if (stringIndex !in 0..5) return
+    val safeFret = fret.coerceIn(0, 12)
+    val midi = InstrumentSynthDsp.GUITAR_OPEN_MIDI[stringIndex] + safeFret
+    val snap = _guitarState.value
+    val voice = snap.selectedVoice
+
+    val now = System.currentTimeMillis()
+    val updatedRecorded = if (snap.isRecording) {
+      if (snap.recordedPlucks.isEmpty()) {
+        guitarRecStartMs = now
+      }
+      val offset = (now - guitarRecStartMs).coerceAtLeast(0L)
+      snap.recordedPlucks + RecordedNoteEvent(midiNote = midi, offsetMs = offset, durationMs = 950L)
+    } else {
+      snap.recordedPlucks
+    }
+    _guitarState.update {
+      it.copy(
+        lastPluckedStringIndex = stringIndex,
+        activePluckedCell = stringIndex to safeFret,
+        recordedPlucks = updatedRecorded,
+      )
+    }
+
+    // Offload Karplus-Strong synthesis to Dispatchers.Default and mix polyphonically
+    viewModelScope.launch {
+      val samples = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizeGuitarStringSamples(
+          midiNote = midi,
+          durationSec = 1.45,
+          velocity = 0.90f,
+          voice = voice,
+        )
+      }
+      liveInstrumentEngine.triggerSamples(samples)
+    }
+
+    guitarCellFlashJob?.cancel()
+    guitarCellFlashJob = viewModelScope.launch {
+      delay(280L)
+      _guitarState.update { it.copy(activePluckedCell = null) }
+    }
+  }
+
+  fun strumGuitarChord(chord: GuitarChordShape = _guitarState.value.selectedChord) {
+    val snap = _guitarState.value
+    val voice = snap.selectedVoice
+
+    if (snap.isRecording) {
+      val now = System.currentTimeMillis()
+      if (snap.recordedPlucks.isEmpty()) {
+        guitarRecStartMs = now
+      }
+      val baseOffset = (now - guitarRecStartMs).coerceAtLeast(0L)
+      val newEvents = chord.activeMidiNotes().mapIndexed { idx, midi ->
+        RecordedNoteEvent(
+          midiNote = midi,
+          offsetMs = baseOffset + idx * 18L,
+          durationMs = 1_100L,
+        )
+      }
+      _guitarState.update { it.copy(recordedPlucks = it.recordedPlucks + newEvents) }
+    }
+
+    viewModelScope.launch {
+      val samples = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizeGuitarChordStrumSamples(
+          frets = chord.frets,
+          voice = voice,
+          durationSec = 1.5,
+        )
+      }
+      liveInstrumentEngine.triggerSamples(samples)
+    }
+  }
+
+  fun toggleGuitarRecording() {
+    val snap = _guitarState.value
+    if (!snap.isRecording) {
+      guitarRecStartMs = System.currentTimeMillis()
+      _guitarState.value = snap.copy(isRecording = true, recordedPlucks = emptyList())
+    } else {
+      _guitarState.value = snap.copy(isRecording = false)
+    }
+  }
+
+  fun clearGuitarRecording() {
+    _guitarState.value = _guitarState.value.copy(
+      isRecording = false,
+      recordedPlucks = emptyList(),
+      lastPluckedStringIndex = null,
+      activePluckedCell = null,
+    )
+  }
+
+  fun previewGuitarPattern() {
+    val snap = _guitarState.value
+    if (snap.isPreviewing) {
+      liveInstrumentEngine.stopPreview()
+      _guitarState.value = snap.copy(isPreviewing = false)
+      return
+    }
+    _guitarState.value = snap.copy(isPreviewing = true)
+    viewModelScope.launch {
+      val buffer = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizeGuitarTrackToBuffer(
+          voice = snap.selectedVoice,
+          chordSequence = snap.chordSequence,
+          strumStyle = snap.strumStyle,
+          recordedPlucks = snap.recordedPlucks,
+          bpm = snap.bpm,
+          bars = 2,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+      }
+      liveInstrumentEngine.playPatternPreview(buffer) {
+        _guitarState.update { it.copy(isPreviewing = false) }
+      }
+    }
+  }
+
+  fun generateGuitarTrack() {
+    val snap = _guitarState.value
+    if (snap.isGenerating) return
+    viewModelScope.launch {
+      _guitarState.value = snap.copy(isGenerating = true, isRecording = false)
+      _errorMessage.value = null
+      try {
+        val result = repository.generateGuitarTrack(
+          voice = snap.selectedVoice,
+          chordSequence = snap.chordSequence,
+          strumStyle = snap.strumStyle,
+          recordedPlucks = snap.recordedPlucks,
+          bpm = snap.bpm,
+          bars = 4,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = result.diagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = _mergeMixerState.value.selectedTrackIds + result.track.id,
+        )
+        playerController.loadTrack(result.track, autoPlay = true)
+        _guitarState.value = _guitarState.value.copy(
+          isGenerating = false,
+          lastGeneratedTrackTitle = result.track.title,
+        )
+        _quickMp3StatusMessage.value = "Generated Guitar track \"${result.track.title}\" & saved to History"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to generate guitar track."
+        _guitarState.value = _guitarState.value.copy(isGenerating = false)
+      }
+    }
+  }
+
+  // --- Drum Page Actions ---
+
+  fun selectDrumKit(kit: DrumKitPreset) {
+    stepSequencerEngine.selectDrumKit(kit)
+    // Pre-warm all 8 drum pad voices for the newly selected kit in background
+    viewModelScope.launch(Dispatchers.Default) {
+      DrumPadVoice.entries.forEach { pad ->
+        liveInstrumentEngine.getOrSynthesizeDrumPad(pad = pad, kit = kit)
+      }
+    }
+  }
+
+  fun triggerDrumPad(pad: DrumPadVoice) {
+    val kit = stepSequencerEngine.state.value.drumKit
+    val currentDrums = _drumState.value
+
+    val now = System.currentTimeMillis()
+    val updatedHits = if (currentDrums.isRecordingPads) {
+      if (currentDrums.recordedHits.isEmpty()) {
+        drumRecStartMs = now
+      }
+      val offset = (now - drumRecStartMs).coerceAtLeast(0L)
+      currentDrums.recordedHits + RecordedDrumHit(pad = pad, offsetMs = offset, velocity = 0.94f)
+    } else {
+      currentDrums.recordedHits
+    }
+
+    _drumState.update {
+      it.copy(
+        activePads = it.activePads + pad,
+        recordedHits = updatedHits,
+      )
+    }
+
+    // Play cached polyphonic hit off the Main thread for zero-latency finger drumming
+    viewModelScope.launch {
+      val samples = withContext(Dispatchers.Default) {
+        liveInstrumentEngine.getOrSynthesizeDrumPad(pad = pad, kit = kit, velocity = 0.94f)
+      }
+      liveInstrumentEngine.triggerSamples(samples)
+    }
+
+    // Auto-clear pad highlight after crisp 180ms pulse
+    viewModelScope.launch {
+      delay(180L)
+      _drumState.update { it.copy(activePads = it.activePads - pad) }
+    }
+  }
+
+  fun toggleDrumPadRecording() {
+    val current = _drumState.value
+    if (!current.isRecordingPads) {
+      drumRecStartMs = System.currentTimeMillis()
+      _drumState.value = current.copy(isRecordingPads = true, recordedHits = emptyList())
+    } else {
+      _drumState.value = current.copy(isRecordingPads = false)
+    }
+  }
+
+  fun clearDrumPadRecording() {
+    _drumState.value = _drumState.value.copy(
+      isRecordingPads = false,
+      recordedHits = emptyList(),
+      activePads = emptySet(),
+    )
+  }
+
+  fun previewDrumPadTake() {
+    val current = _drumState.value
+    if (current.isPreviewingPads) {
+      liveInstrumentEngine.stopPreview()
+      _drumState.update { it.copy(isPreviewingPads = false) }
+      return
+    }
+    if (current.recordedHits.isEmpty()) return
+    val kit = stepSequencerEngine.state.value.drumKit
+    val bpm = stepSequencerEngine.state.value.bpm
+    _drumState.update { it.copy(isPreviewingPads = true) }
+    viewModelScope.launch {
+      val buffer = withContext(Dispatchers.Default) {
+        InstrumentSynthDsp.synthesizeDrumPadTakeToBuffer(
+          kit = kit,
+          recordedHits = current.recordedHits,
+          bpm = bpm,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+      }
+      liveInstrumentEngine.playPatternPreview(buffer) {
+        _drumState.update { it.copy(isPreviewingPads = false) }
+      }
+    }
+  }
+
+  fun generateDrumTrack() {
+    val snap = stepSequencerEngine.state.value
+    if (snap.isRenderingToLibrary) return
+    val drumSnap = _drumState.value
+
+    viewModelScope.launch {
+      stepSequencerEngine.setRenderingToLibrary(true)
+      _drumState.update { it.copy(isRecordingPads = false) }
+      _errorMessage.value = null
+      try {
+        val result = if (drumSnap.recordedHits.isNotEmpty()) {
+          repository.generateDrumPadTakeTrack(
+            kit = snap.drumKit,
+            recordedHits = drumSnap.recordedHits,
+            bpm = snap.bpm,
+            targetLufs = _loudnessTarget.value.lufs,
+            applyPostGain = _autoPostGainEnabled.value,
+          )
+        } else {
+          val effectiveState = if (snap.activeStepCount > 0) {
+            snap
+          } else {
+            snap.copy(
+              pattern = SequencerPreset.FOUR_ON_FLOOR.buildGrid(),
+              selectedPresetName = SequencerPreset.FOUR_ON_FLOOR.label,
+            )
+          }
+          repository.renderSequencerPatternToTrack(
+            sequencerState = effectiveState,
+            targetLufs = _loudnessTarget.value.lufs,
+            applyPostGain = _autoPostGainEnabled.value,
+          )
+        }
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = result.diagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = _mergeMixerState.value.selectedTrackIds + result.track.id,
+        )
+        stepSequencerEngine.stop()
+        playerController.loadTrack(result.track, autoPlay = true)
+        _drumState.update { it.copy(lastGeneratedTrackTitle = result.track.title) }
+        _quickMp3StatusMessage.value = "Generated Drum track \"${result.track.title}\" & saved to History"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to generate drum track."
+      } finally {
+        stepSequencerEngine.setRenderingToLibrary(false)
+      }
+    }
+  }
+
+  // --- Multi-Track Merger & Quick MP3 Export ---
+
+  fun toggleMergeTrackSelection(trackId: String) {
+    val current = _mergeMixerState.value
+    val nextSet = if (trackId in current.selectedTrackIds) {
+      current.selectedTrackIds - trackId
+    } else {
+      current.selectedTrackIds + trackId
+    }
+    _mergeMixerState.value = current.copy(
+      selectedTrackIds = nextSet,
+      lastStatusMessage = null,
+    )
+  }
+
+  fun setMergeStemGain(trackId: String, gain: Float) {
+    val current = _mergeMixerState.value
+    val nextGains = current.stemGains.toMutableMap().apply {
+      put(trackId, gain.coerceIn(0f, 1.5f))
+    }
+    _mergeMixerState.value = current.copy(stemGains = nextGains)
+  }
+
+  fun setMergeLoopShorterStems(loop: Boolean) {
+    _mergeMixerState.value = _mergeMixerState.value.copy(loopShorterStems = loop)
+  }
+
+  fun onMergeTitleChanged(title: String) {
+    _mergeMixerState.value = _mergeMixerState.value.copy(customTitle = title)
+  }
+
+  fun autoPickBandStems() {
+    val tracks = uiState.value.allTracks
+    val picked = mutableSetOf<String>()
+    tracks.firstOrNull { it.category.equals("Piano", ignoreCase = true) }?.let { picked.add(it.id) }
+    tracks.firstOrNull { it.category.equals("Guitar", ignoreCase = true) }?.let { picked.add(it.id) }
+    tracks.firstOrNull { it.category.equals("Drums", ignoreCase = true) }?.let { picked.add(it.id) }
+    if (picked.size < 2) {
+      tracks.filter { it.id !in picked }.take(3 - picked.size).forEach { picked.add(it.id) }
+    }
+    _mergeMixerState.value = _mergeMixerState.value.copy(
+      selectedTrackIds = picked,
+      lastStatusMessage = if (picked.size >= 2) {
+        "Selected ${picked.size} instrument stems for mixdown"
+      } else {
+        "Generate at least 2 tracks across Piano, Guitar, or Drums to merge."
+      },
+    )
+  }
+
+  fun mergeSelectedTracks(
+    saveAsMp3AfterMerge: Boolean = false,
+    onRequireSafFallback: (GeneratedTrack) -> Unit = {},
+  ) {
+    val mergeSnap = _mergeMixerState.value
+    if (mergeSnap.isMerging) return
+    val allTracks = uiState.value.allTracks
+    val selectedTracks = allTracks.filter { it.id in mergeSnap.selectedTrackIds }
+    if (selectedTracks.size < 2) {
+      _mergeMixerState.value = mergeSnap.copy(
+        lastStatusMessage = "Select at least 2 tracks to merge.",
+      )
+      return
+    }
+
+    viewModelScope.launch {
+      _mergeMixerState.value = _mergeMixerState.value.copy(isMerging = true, lastStatusMessage = null)
+      _errorMessage.value = null
+      try {
+        val stemSpecs = selectedTracks.map { track ->
+          MixStemSpec(
+            track = track,
+            gain = mergeSnap.stemGains[track.id] ?: 1.0f,
+            loopToMatch = mergeSnap.loopShorterStems,
+          )
+        }
+        val result = repository.mergeTracksToMaster(
+          title = mergeSnap.customTitle,
+          stems = stemSpecs,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = result.diagnostics
+        playerController.loadTrack(result.track, autoPlay = true)
+
+        if (saveAsMp3AfterMerge) {
+          if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val mp3Config = AudioExportConfig(
+              format = AudioExportFormat.MP3,
+              bitrateKbps = 192,
+              normalizeOutputGain = _autoPostGainEnabled.value,
+              targetOutputLufs = _loudnessTarget.value.lufs,
+            )
+            val outcome = repository.exportTrackToMusicMp3(result.track, mp3Config)
+            val kb = (outcome.fileSizeBytes / 1024L).coerceAtLeast(1L)
+            val msg = "Merged \"${result.track.title}\" & saved MP3 ($kb KB) to ${outcome.locationLabel}"
+            _mergeMixerState.value = _mergeMixerState.value.copy(
+              isMerging = false,
+              customTitle = "",
+              lastStatusMessage = msg,
+            )
+            _quickMp3StatusMessage.value = msg
+          } else {
+            _mergeMixerState.value = _mergeMixerState.value.copy(
+              isMerging = false,
+              customTitle = "",
+              lastStatusMessage = "Merged \"${result.track.title}\" — pick folder to save MP3",
+            )
+            onRequireSafFallback(result.track)
+          }
+        } else {
+          val msg = "Merged ${selectedTracks.size} stems into \"${result.track.title}\""
+          _mergeMixerState.value = _mergeMixerState.value.copy(
+            isMerging = false,
+            customTitle = "",
+            lastStatusMessage = msg,
+          )
+          _quickMp3StatusMessage.value = msg
+        }
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to merge tracks."
+        _mergeMixerState.value = _mergeMixerState.value.copy(isMerging = false)
+      }
+    }
+  }
+
+  fun exportCurrentProjectMergedAudioToMp3(
+    onRequireSafFallback: (GeneratedTrack) -> Unit = {},
+  ) {
+    val mergeSnap = _mergeMixerState.value
+    if (mergeSnap.isMerging) return
+    val allTracks = uiState.value.allTracks
+    val selectedTracks = allTracks.filter { it.id in mergeSnap.selectedTrackIds }
+    val stemsToExport = if (selectedTracks.size >= 2) {
+      selectedTracks
+    } else {
+      allTracks.take(3).ifEmpty {
+        _mergeMixerState.value = mergeSnap.copy(lastStatusMessage = "Generate or select at least 2 tracks to export merged MP3.")
+        return
+      }
+    }
+
+    viewModelScope.launch {
+      _mergeMixerState.value = mergeSnap.copy(isMerging = true, lastStatusMessage = null)
+      _errorMessage.value = null
+      try {
+        val stemSpecs = stemsToExport.map { track ->
+          MixStemSpec(
+            track = track,
+            gain = mergeSnap.stemGains[track.id] ?: 1.0f,
+            loopToMatch = mergeSnap.loopShorterStems,
+          )
+        }
+        val config = AudioExportConfig(
+          format = AudioExportFormat.MP3,
+          bitrateKbps = 192,
+          normalizeOutputGain = _autoPostGainEnabled.value,
+          targetOutputLufs = _loudnessTarget.value.lufs,
+        )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+          val outcome = repository.exportCurrentProjectMergedAudioToMp3(
+            title = mergeSnap.customTitle,
+            stems = stemSpecs,
+            config = config,
+            targetLufs = _loudnessTarget.value.lufs,
+            applyPostGain = _autoPostGainEnabled.value,
+          )
+          val kb = (outcome.fileSizeBytes / 1024L).coerceAtLeast(1L)
+          val msg = "Exported merged project MP3 ($kb KB) to ${outcome.locationLabel}"
+          _mergeMixerState.value = mergeSnap.copy(
+            isMerging = false,
+            customTitle = "",
+            lastStatusMessage = msg,
+          )
+          _quickMp3StatusMessage.value = msg
+        } else {
+          val result = repository.mergeTracksToMaster(
+            title = mergeSnap.customTitle,
+            stems = stemSpecs,
+            targetLufs = _loudnessTarget.value.lufs,
+            applyPostGain = _autoPostGainEnabled.value,
+          )
+          _mergeMixerState.value = mergeSnap.copy(
+            isMerging = false,
+            customTitle = "",
+            lastStatusMessage = "Merged project audio — pick folder to save MP3",
+          )
+          onRequireSafFallback(result.track)
+        }
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to export merged project MP3."
+        _mergeMixerState.value = mergeSnap.copy(isMerging = false)
+      }
+    }
+  }
+
+  fun quickSaveTrackAsMp3(
+    track: GeneratedTrack,
+    onRequireSafFallback: (GeneratedTrack) -> Unit = {},
+  ) {
+    if (_isQuickSavingMp3.value) return
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+      _exportConfig.value = AudioExportConfig(
+        format = AudioExportFormat.MP3,
+        bitrateKbps = 192,
+        normalizeOutputGain = _autoPostGainEnabled.value,
+        targetOutputLufs = _loudnessTarget.value.lufs,
+      )
+      onRequireSafFallback(track)
+      return
+    }
+
+    viewModelScope.launch {
+      _isQuickSavingMp3.value = true
+      _errorMessage.value = null
+      try {
+        val config = AudioExportConfig(
+          format = AudioExportFormat.MP3,
+          bitrateKbps = 192,
+          normalizeOutputGain = _autoPostGainEnabled.value,
+          targetOutputLufs = _loudnessTarget.value.lufs,
+        )
+        val outcome = repository.exportTrackToMusicMp3(track, config)
+        val kb = (outcome.fileSizeBytes / 1024L).coerceAtLeast(1L)
+        _quickMp3StatusMessage.value = "Saved ${outcome.fileName} ($kb KB · 192 kbps MP3) to ${outcome.locationLabel}"
+      } catch (e: Exception) {
+        _errorMessage.value = e.localizedMessage ?: "Failed to save MP3."
+      } finally {
+        _isQuickSavingMp3.value = false
+      }
+    }
+  }
+
+  fun playSoundClipWithAudioEngine(track: GeneratedTrack, looping: Boolean = false) {
+    studioClipEngine.playTrack(track = track, looping = looping)
+  }
+
+  fun stopSoundClipAudioEngine() {
+    studioClipEngine.stop()
+  }
+
   override fun onCleared() {
     stepSequencerEngine.stop()
     metronomeEngine.stop()
+    liveInstrumentEngine.release()
+    studioClipEngine.release()
     super.onCleared()
   }
 }

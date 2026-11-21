@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,9 +27,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,6 +44,7 @@ import androidx.compose.material.icons.automirrored.rounded.Label
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.BrightnessAuto
@@ -56,16 +61,19 @@ import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Piano
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -74,6 +82,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -104,16 +116,26 @@ import com.example.ai.PlaceholderTrackAutoTagger
 import com.example.ai.TrackAutoTagResult
 import com.example.audio.AudioExportBitrateOption
 import com.example.audio.AudioExportFormat
+import com.example.audio.DrumKitPreset
+import com.example.audio.DrumPadVoice
 import com.example.audio.EqPreset
+import com.example.audio.GuitarChordShape
+import com.example.audio.GuitarProgressionPreset
+import com.example.audio.GuitarStrumStyle
+import com.example.audio.GuitarVoice
 import com.example.audio.LoudnessTarget
 import com.example.audio.MetronomeTimeSignature
 import com.example.audio.MetronomeTone
+import com.example.audio.PianoProgressionPreset
+import com.example.audio.PianoVoice
 import com.example.audio.ReverbEngineMode
 import com.example.audio.ReverbPreset
 import com.example.audio.SequencerLane
 import com.example.audio.SequencerPreset
+import com.example.audio.StudioSoundResource
 import com.example.audio.TrackAudioEnvelope
 import com.example.audio.WaveformInteractionMode
+import com.example.data.local.TrackHistoryItem
 import com.example.model.BulkRenameConfig
 import com.example.model.GeneratedTrack
 import com.example.model.Playlist
@@ -122,25 +144,22 @@ import com.example.ui.components.BulkRenameDialog
 import com.example.ui.components.BulkSelectionBar
 import com.example.ui.components.CreatePlaylistDialog
 import com.example.ui.components.CustomAudioPlayer
-import com.example.ui.components.MetronomeCard
+import com.example.ui.components.DrumStudioPage
+import com.example.ui.components.GuitarStudioPage
+import com.example.ui.components.MultiTrackMergerCard
+import com.example.ui.components.MusicPromptGeneratorCard
+import com.example.ui.components.PianoStudioPage
 import com.example.ui.components.PlaylistsShelfSection
 import com.example.ui.components.SaveStudioProjectDialog
-import com.example.ui.components.StepSequencerCard
+import com.example.ui.components.SoundResourcesCard
 import com.example.ui.components.StudioProjectsCard
 import com.example.ui.components.TrackExportDialog
+import com.example.ui.components.TrackHistoryCard
 import com.example.ui.components.TrackPlaylistsDialog
 import com.example.ui.components.TrackTrimDialog
 import com.example.ui.components.WaveformVisualizer
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.ThemeMode
-
-private val quickPresets = listOf(
-  "Rainy lo-fi rhodes study beat 84 bpm",
-  "Neon midnight synthwave drive 112 bpm",
-  "Deep space ambient meditation pad 72 bpm",
-  "Energetic cyber techno bassline 128 bpm",
-  "Emotional cinematic piano theme 94 bpm",
-)
 
 private val suggestedCategories = listOf(
   "Lo-Fi Chill",
@@ -205,6 +224,9 @@ fun SonicForgeScreen(
   onSelectTrack: (GeneratedTrack) -> Unit,
   onDeleteTrack: (String) -> Unit,
   onTogglePlayPause: () -> Unit,
+  onPlay: () -> Unit = onTogglePlayPause,
+  onPause: () -> Unit = onTogglePlayPause,
+  onStop: () -> Unit = {},
   onBeginSeek: () -> Unit,
   onPreviewSeek: (Long) -> Unit,
   onCommitSeek: (Long) -> Unit,
@@ -279,8 +301,59 @@ fun SonicForgeScreen(
   onLoadProject: (String) -> Unit = {},
   onDeleteProject: (String) -> Unit = {},
   onDismissProjectStatus: () -> Unit = {},
+  onSelectDestination: (StudioDestination) -> Unit = {},
+  onSelectStudioSectionTab: (StudioSectionTab) -> Unit = {},
+  onGenerateSoundResource: (StudioSoundResource) -> Unit = {},
+  onQuickSaveCurrentMp3: (GeneratedTrack) -> Unit = {},
+  onDismissQuickMp3Status: () -> Unit = {},
+  onSelectPianoVoice: (PianoVoice) -> Unit = {},
+  onSelectPianoProgression: (PianoProgressionPreset) -> Unit = {},
+  onShiftPianoOctave: (Int) -> Unit = {},
+  onStepPianoBpm: (Int) -> Unit = {},
+  onPlayPianoKey: (Int) -> Unit = {},
+  onPlayPianoChord: (IntArray) -> Unit = {},
+  onTogglePianoRecording: () -> Unit = {},
+  onClearPianoRecording: () -> Unit = {},
+  onPreviewPianoPattern: () -> Unit = {},
+  onGeneratePianoTrack: () -> Unit = {},
+  onSelectGuitarVoice: (GuitarVoice) -> Unit = {},
+  onSelectGuitarChord: (GuitarChordShape) -> Unit = {},
+  onToggleGuitarChordInSequence: (GuitarChordShape) -> Unit = {},
+  onAddGuitarChordToSequence: (GuitarChordShape) -> Unit = onToggleGuitarChordInSequence,
+  onRemoveGuitarChordFromSequenceAt: (Int) -> Unit = {},
+  onApplyGuitarProgressionPreset: (GuitarProgressionPreset) -> Unit = {},
+  onSelectGuitarStrumStyle: (GuitarStrumStyle) -> Unit = {},
+  onStepGuitarBpm: (Int) -> Unit = {},
+  onPluckGuitarString: (Int, Int) -> Unit = { _, _ -> },
+  onStrumGuitarChord: () -> Unit = {},
+  onToggleGuitarRecording: () -> Unit = {},
+  onClearGuitarRecording: () -> Unit = {},
+  onPreviewGuitarPattern: () -> Unit = {},
+  onGenerateGuitarTrack: () -> Unit = {},
+  onSelectDrumKit: (DrumKitPreset) -> Unit = {},
+  onTriggerDrumPad: (DrumPadVoice) -> Unit = {},
+  onToggleDrumPadRecording: () -> Unit = {},
+  onClearDrumPadRecording: () -> Unit = {},
+  onPreviewDrumPadTake: () -> Unit = {},
+  onGenerateDrumTrack: () -> Unit = {},
+  onToggleMergeTrackSelection: (String) -> Unit = {},
+  onMergeStemGainChange: (String, Float) -> Unit = { _, _ -> },
+  onMergeLoopShorterStemsChange: (Boolean) -> Unit = {},
+  onMergeTitleChanged: (String) -> Unit = {},
+  onAutoPickBandStems: () -> Unit = {},
+  onMergeSelectedTracks: () -> Unit = {},
+  onMergeAndSaveMp3: () -> Unit = {},
+  onSelectHistoryTypeFilter: (String) -> Unit = {},
+  onHistorySearchQueryChanged: (String) -> Unit = {},
+  onPlayHistoryItem: (TrackHistoryItem) -> Unit = {},
+  onReuseHistoryPrompt: (String) -> Unit = {},
+  onDeleteHistoryEntry: (String) -> Unit = {},
+  onClearAllHistory: () -> Unit = {},
 ) {
   val colorScheme = MaterialTheme.colorScheme
+  BackHandler(enabled = uiState.activeDestination != StudioDestination.STUDIO) {
+    onSelectDestination(StudioDestination.STUDIO)
+  }
 
   uiState.editingTrack?.let { trackToEdit ->
     TrackOrganizationDialog(
@@ -388,508 +461,918 @@ fun SonicForgeScreen(
     )
   }
 
-  Scaffold(
-    containerColor = colorScheme.background,
-    contentWindowInsets = WindowInsets.safeDrawing,
-    bottomBar = {
-      if (uiState.showBottomWaveformBar) {
-        BottomWaveformBar(
-          track = uiState.currentTrack,
-          playbackState = uiState.playback,
-          canSkipNext = uiState.canSkipNext,
-          onTogglePlayPause = onTogglePlayPause,
-          onSkipNext = onSkipNext,
-          onBeginSeek = onBeginSeek,
-          onPreviewSeek = onPreviewSeek,
-          onCommitSeek = onCommitSeek,
-          onEliminate = { onSetBottomWaveformVisible(false) },
-        )
-      }
-    },
-  ) { innerPadding ->
-    BoxWithConstraints(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding),
-    ) {
-      val isWideLayout = maxWidth >= 840.dp
+  BoxWithConstraints(
+    modifier = Modifier.fillMaxSize(),
+  ) {
+    val isWideLayout = maxWidth >= 840.dp
 
-      if (isWideLayout) {
-        Row(
-          modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-          horizontalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-          LazyColumn(
-            modifier = Modifier
-              .weight(1.1f)
-              .fillMaxHeight(),
-            contentPadding = PaddingValues(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-          ) {
-            item {
-              StudioHeader(
-                themeMode = uiState.themeMode,
-                onSelectThemeMode = onSelectThemeMode,
-                showRestoreWaveformButton = !uiState.showBottomWaveformBar,
-                onRestoreBottomWaveform = { onSetBottomWaveformVisible(true) },
-              )
-            }
-            item {
-              BackgroundPermissionsCard(
-                notificationPermission = uiState.notificationPermission,
-                onRequestNotificationPermission = onRequestNotificationPermission,
-                onOpenNotificationSettings = onOpenNotificationSettings,
-              )
-            }
-            item {
-              PromptSynthesizerCard(
-                promptInput = uiState.promptInput,
-                selectedEngine = uiState.selectedEngine,
-                isGenerating = uiState.isGenerating,
-                errorMessage = uiState.errorMessage,
-                onSelectEngine = onSelectEngine,
-                onPromptChanged = onPromptChanged,
-                onApplyPreset = onApplyPreset,
-                onGenerateTrack = onGenerateTrack,
-              )
-            }
-            item {
-              StepSequencerCard(
-                state = uiState.stepSequencer,
-                onToggleStep = onToggleSequencerStep,
-                onTogglePlayStop = onToggleSequencerPlayStop,
-                onClearPattern = onClearSequencerPattern,
-                onApplyPreset = onApplySequencerPreset,
-                onStepBpm = onStepSequencerBpm,
-                onToggleBpmSync = onToggleSequencerBpmSync,
-                onCycleSwing = onCycleSequencerSwing,
-                onRenderToLibrary = onRenderSequencerToLibrary,
-              )
-            }
-            item {
-              MetronomeCard(
-                state = uiState.metronome,
-                onTogglePlayStop = onToggleMetronomePlayStop,
-                onStepBpm = onStepMetronomeBpm,
-                onToggleBpmSync = onToggleMetronomeBpmSync,
-                onVolumeChange = onMetronomeVolumeChange,
-                onPitchHzChange = onMetronomePitchHzChange,
-                onSelectToneStyle = onSelectMetronomeToneStyle,
-                onSelectTimeSignature = onSelectMetronomeTimeSignature,
-                onToggleAccentDownbeat = onToggleMetronomeAccentDownbeat,
-                onTapTempo = onTapMetronomeTempo,
-              )
-            }
-            item {
-              StudioProjectsCard(
-                projects = uiState.projects,
-                activeProjectId = uiState.activeProjectId,
-                currentTrack = uiState.currentTrack,
-                allTracks = uiState.allTracks,
-                playbackState = uiState.playback,
-                sequencerState = uiState.stepSequencer,
-                isSavingProject = uiState.isSavingProject,
-                statusMessage = uiState.projectStatusMessage,
-                onOpenSaveDialog = onOpenSaveProjectDialog,
-                onQuickSaveProject = onQuickSaveActiveProject,
-                onLoadProject = onLoadProject,
-                onDeleteProject = onDeleteProject,
-                onDismissStatus = onDismissProjectStatus,
-              )
-            }
-            uiState.latestAutoTagResult?.let { tagResult ->
-              item {
-                AiAutoTagNoticeCard(
-                  result = tagResult,
-                  onDismiss = onDismissAutoTagBanner,
-                )
-              }
-            }
-            item {
-              TrackLibrarySectionHeader(
-                trackCount = uiState.tracks.size,
-                hasAnyTracks = uiState.allTracks.isNotEmpty(),
-                isSelectionMode = uiState.isSelectionMode,
-                onToggleSelectionMode = onToggleSelectionMode,
-                onDownloadUrlClick = onOpenUrlDownloadDialog,
-                onImportAudioClick = onImportAudioClick,
-              )
-            }
-            item {
-              PlaylistsShelfSection(
-                playlists = uiState.playlists,
-                selectedPlaylistId = uiState.selectedPlaylistId,
-                onCreatePlaylistClick = onOpenCreatePlaylistDialog,
-                onSelectPlaylist = onSelectPlaylistFilter,
-                onPlayPlaylist = onPlayPlaylist,
-                onDeletePlaylist = onDeletePlaylist,
-              )
-            }
-            item {
-              LibraryOrganizationControls(
-                categories = uiState.availableCategories,
-                selectedCategory = uiState.selectedCategory,
-                showFavoritesOnly = uiState.showFavoritesOnly,
-                totalTrackCount = uiState.allTracks.size,
-                favoriteTrackCount = uiState.favoriteTrackCount,
-                searchQuery = uiState.searchQuery,
-                onSelectCategory = onSelectCategory,
-                onSetShowFavoritesOnly = onSetShowFavoritesOnly,
-                onSearchQueryChanged = onSearchQueryChanged,
-              )
-            }
-            if (uiState.isSelectionMode) {
-              item {
-                val visibleIds = uiState.tracks.map { it.id }
-                val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in uiState.selectedTrackIds }
-                BulkSelectionBar(
-                  selectedCount = uiState.selectedTrackIds.size,
-                  allVisibleSelected = allVisibleSelected,
-                  onToggleSelectAll = onToggleSelectAllVisible,
-                  onOpenBulkRename = onOpenBulkRenameDialog,
-                  onExitSelectionMode = onExitSelectionMode,
-                )
-              }
-            }
-            if (uiState.isInitializing) {
-              item { LoadingTracksPlaceholder() }
-            } else if (uiState.tracks.isEmpty()) {
-              item {
-                EmptyTracksCard(
-                  showFavoritesOnly = uiState.showFavoritesOnly,
-                  selectedPlaylistName = uiState.selectedPlaylist?.name,
-                  onShowAllTracks = {
-                    onSelectPlaylistFilter(null)
-                    onSetShowFavoritesOnly(false)
-                  },
-                )
-              }
-            } else {
-              items(uiState.tracks, key = { it.id }) { track ->
-                val isSelected = track.id == uiState.currentTrack?.id
-                val isPlayingThis = isSelected && uiState.playback.isPlaying
-                val isBulkSelected = track.id in uiState.selectedTrackIds
-                GeneratedTrackRow(
-                  track = track,
-                  isSelected = isSelected,
-                  isPlaying = isPlayingThis,
-                  isSelectionMode = uiState.isSelectionMode,
-                  isBulkSelected = isBulkSelected,
-                  onToggleBulkSelect = { onToggleTrackSelection(track.id) },
-                  onLongClick = { onEnterSelectionWithTrack(track.id) },
-                  onClick = {
-                    if (isSelected) onTogglePlayPause() else onSelectTrack(track)
-                  },
-                  onToggleFavorite = { onToggleTrackFavorite(track) },
-                  onAddToPlaylist = { onOpenTrackPlaylistsDialog(track) },
-                  onEditOrganization = { onEditOrganizationClick(track) },
-                  onTrimTrack = { onTrimTrackClick(track) },
-                  onExportMp3 = { onExportMp3Click(track) },
-                  onDelete = { onDeleteTrack(track.id) },
-                )
-              }
-            }
-          }
-
-          Column(
-            modifier = Modifier
-              .weight(0.95f)
-              .fillMaxHeight()
-              .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-          ) {
-            Text(
-              text = stringResource(R.string.player_section_title),
-              style = MaterialTheme.typography.titleLarge,
-              color = colorScheme.onBackground,
-            )
-            CustomAudioPlayer(
+    Scaffold(
+      containerColor = colorScheme.background,
+      contentWindowInsets = WindowInsets.safeDrawing,
+      bottomBar = {
+        Column(modifier = Modifier.fillMaxWidth()) {
+          if (uiState.showBottomWaveformBar) {
+            BottomWaveformBar(
               track = uiState.currentTrack,
               playbackState = uiState.playback,
-              bufferDiagnostics = uiState.activeBufferDiagnostics,
-              canSkipPrevious = uiState.canSkipPrevious,
               canSkipNext = uiState.canSkipNext,
+              applyNavBarPadding = isWideLayout,
               onTogglePlayPause = onTogglePlayPause,
+              onSkipNext = onSkipNext,
               onBeginSeek = onBeginSeek,
               onPreviewSeek = onPreviewSeek,
               onCommitSeek = onCommitSeek,
-              onSeekBy = onSeekBy,
-              onSkipPrevious = onSkipPrevious,
-              onSkipNext = onSkipNext,
-              onToggleLoop = onToggleLoop,
-              onVolumeChange = onVolumeChange,
-              onToggleMute = onToggleMute,
-              onPitchChange = onPitchChange,
-              onStepPitch = onStepPitch,
-              onResetPitch = onResetPitch,
-              onSelectReverbPreset = onSelectReverbPreset,
-              onReverbWetMixChange = onReverbWetMixChange,
-              onReverbRoomSizeChange = onReverbRoomSizeChange,
-              onReverbDampingChange = onReverbDampingChange,
-              onReverbEngineModeChange = onReverbEngineModeChange,
-              onResetReverb = onResetReverb,
-              onSaveReverbCopy = onSaveReverbCopy,
-              isApplyingReverb = uiState.isApplyingReverb,
-              onEqualizerEnabledChange = onEqualizerEnabledChange,
-              onSelectEqualizerPreset = onSelectEqualizerPreset,
-              onEqualizerBandGainChange = onEqualizerBandGainChange,
-              onResetEqualizer = onResetEqualizer,
-              loudnessTarget = uiState.loudnessTarget,
-              autoPostGainEnabled = uiState.autoPostGainEnabled,
-              isNormalizing = uiState.isNormalizing,
-              onAutoPostGainEnabledChange = onAutoPostGainEnabledChange,
-              onSelectLoudnessTarget = onSelectLoudnessTarget,
-              onNormalizeActiveTrack = onNormalizeActiveTrack,
-              onNormalizeLibrary = onNormalizeLibrary,
-              onCrossfadeEnabledChange = onCrossfadeEnabledChange,
-              onCrossfadeDurationChange = onCrossfadeDurationChange,
-              onSelectCrossfadePreset = onSelectCrossfadePreset,
-              interactionMode = uiState.waveformInteractionMode,
-              onSelectInteractionMode = onSelectWaveformInteractionMode,
-              onPaintEnvelopePoint = onPaintTrackEnvelopePoint,
-              onMuteSegment = onMuteTrackSegment,
-              onToggleMuteTap = onToggleMuteAtTap,
-              onResetAudioEnvelope = onResetTrackAudioEnvelope,
+              onEliminate = { onSetBottomWaveformVisible(false) },
+            )
+          }
+          if (!isWideLayout) {
+            StudioNavigationBar(
+              activeDestination = uiState.activeDestination,
+              onSelectDestination = onSelectDestination,
             )
           }
         }
-      } else {
-        LazyColumn(
-          modifier = Modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets(0.dp)),
-          contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-          verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-          item {
-            StudioHeader(
-              themeMode = uiState.themeMode,
-              onSelectThemeMode = onSelectThemeMode,
-              showRestoreWaveformButton = !uiState.showBottomWaveformBar,
-              onRestoreBottomWaveform = { onSetBottomWaveformVisible(true) },
-            )
-          }
+      },
+    ) { innerPadding ->
+      Row(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding),
+      ) {
+        if (isWideLayout) {
+          StudioNavigationRail(
+            activeDestination = uiState.activeDestination,
+            onSelectDestination = onSelectDestination,
+          )
+        }
 
-          item {
-            CustomAudioPlayer(
-              track = uiState.currentTrack,
-              playbackState = uiState.playback,
-              bufferDiagnostics = uiState.activeBufferDiagnostics,
-              canSkipPrevious = uiState.canSkipPrevious,
-              canSkipNext = uiState.canSkipNext,
-              onTogglePlayPause = onTogglePlayPause,
-              onBeginSeek = onBeginSeek,
-              onPreviewSeek = onPreviewSeek,
-              onCommitSeek = onCommitSeek,
-              onSeekBy = onSeekBy,
-              onSkipPrevious = onSkipPrevious,
-              onSkipNext = onSkipNext,
-              onToggleLoop = onToggleLoop,
-              onVolumeChange = onVolumeChange,
-              onToggleMute = onToggleMute,
-              onPitchChange = onPitchChange,
-              onStepPitch = onStepPitch,
-              onResetPitch = onResetPitch,
-              onSelectReverbPreset = onSelectReverbPreset,
-              onReverbWetMixChange = onReverbWetMixChange,
-              onReverbRoomSizeChange = onReverbRoomSizeChange,
-              onReverbDampingChange = onReverbDampingChange,
-              onReverbEngineModeChange = onReverbEngineModeChange,
-              onResetReverb = onResetReverb,
-              onSaveReverbCopy = onSaveReverbCopy,
-              isApplyingReverb = uiState.isApplyingReverb,
-              onEqualizerEnabledChange = onEqualizerEnabledChange,
-              onSelectEqualizerPreset = onSelectEqualizerPreset,
-              onEqualizerBandGainChange = onEqualizerBandGainChange,
-              onResetEqualizer = onResetEqualizer,
-              loudnessTarget = uiState.loudnessTarget,
-              autoPostGainEnabled = uiState.autoPostGainEnabled,
-              isNormalizing = uiState.isNormalizing,
-              onAutoPostGainEnabledChange = onAutoPostGainEnabledChange,
-              onSelectLoudnessTarget = onSelectLoudnessTarget,
-              onNormalizeActiveTrack = onNormalizeActiveTrack,
-              onNormalizeLibrary = onNormalizeLibrary,
-              onCrossfadeEnabledChange = onCrossfadeEnabledChange,
-              onCrossfadeDurationChange = onCrossfadeDurationChange,
-              onSelectCrossfadePreset = onSelectCrossfadePreset,
-              interactionMode = uiState.waveformInteractionMode,
-              onSelectInteractionMode = onSelectWaveformInteractionMode,
-              onPaintEnvelopePoint = onPaintTrackEnvelopePoint,
-              onMuteSegment = onMuteTrackSegment,
-              onToggleMuteTap = onToggleMuteAtTap,
-              onResetAudioEnvelope = onResetTrackAudioEnvelope,
-            )
-          }
+        val showDualColumnStudio = isWideLayout && uiState.activeDestination == StudioDestination.STUDIO
 
-          item {
-            BackgroundPermissionsCard(
-              notificationPermission = uiState.notificationPermission,
-              onRequestNotificationPermission = onRequestNotificationPermission,
-              onOpenNotificationSettings = onOpenNotificationSettings,
-            )
-          }
-
-          item {
-            PromptSynthesizerCard(
-              promptInput = uiState.promptInput,
-              selectedEngine = uiState.selectedEngine,
-              isGenerating = uiState.isGenerating,
-              errorMessage = uiState.errorMessage,
-              onSelectEngine = onSelectEngine,
-              onPromptChanged = onPromptChanged,
-              onApplyPreset = onApplyPreset,
-              onGenerateTrack = onGenerateTrack,
-            )
-          }
-
-          item {
-            StepSequencerCard(
-              state = uiState.stepSequencer,
-              onToggleStep = onToggleSequencerStep,
-              onTogglePlayStop = onToggleSequencerPlayStop,
-              onClearPattern = onClearSequencerPattern,
-              onApplyPreset = onApplySequencerPreset,
-              onStepBpm = onStepSequencerBpm,
-              onToggleBpmSync = onToggleSequencerBpmSync,
-              onCycleSwing = onCycleSequencerSwing,
-              onRenderToLibrary = onRenderSequencerToLibrary,
-            )
-          }
-
-          item {
-            MetronomeCard(
-              state = uiState.metronome,
-              onTogglePlayStop = onToggleMetronomePlayStop,
-              onStepBpm = onStepMetronomeBpm,
-              onToggleBpmSync = onToggleMetronomeBpmSync,
-              onVolumeChange = onMetronomeVolumeChange,
-              onPitchHzChange = onMetronomePitchHzChange,
-              onSelectToneStyle = onSelectMetronomeToneStyle,
-              onSelectTimeSignature = onSelectMetronomeTimeSignature,
-              onToggleAccentDownbeat = onToggleMetronomeAccentDownbeat,
-              onTapTempo = onTapMetronomeTempo,
-            )
-          }
-
-          item {
-            StudioProjectsCard(
-              projects = uiState.projects,
-              activeProjectId = uiState.activeProjectId,
-              currentTrack = uiState.currentTrack,
-              allTracks = uiState.allTracks,
-              playbackState = uiState.playback,
-              sequencerState = uiState.stepSequencer,
-              isSavingProject = uiState.isSavingProject,
-              statusMessage = uiState.projectStatusMessage,
-              onOpenSaveDialog = onOpenSaveProjectDialog,
-              onQuickSaveProject = onQuickSaveActiveProject,
-              onLoadProject = onLoadProject,
-              onDeleteProject = onDeleteProject,
-              onDismissStatus = onDismissProjectStatus,
-            )
-          }
-
-          uiState.latestAutoTagResult?.let { tagResult ->
-            item {
-              AiAutoTagNoticeCard(
-                result = tagResult,
-                onDismiss = onDismissAutoTagBanner,
-              )
-            }
-          }
-
-          item {
-            TrackLibrarySectionHeader(
-              trackCount = uiState.tracks.size,
-              hasAnyTracks = uiState.allTracks.isNotEmpty(),
-              isSelectionMode = uiState.isSelectionMode,
-              onToggleSelectionMode = onToggleSelectionMode,
-              onDownloadUrlClick = onOpenUrlDownloadDialog,
-              onImportAudioClick = onImportAudioClick,
-            )
-          }
-
-          item {
-            PlaylistsShelfSection(
-              playlists = uiState.playlists,
-              selectedPlaylistId = uiState.selectedPlaylistId,
-              onCreatePlaylistClick = onOpenCreatePlaylistDialog,
-              onSelectPlaylist = onSelectPlaylistFilter,
-              onPlayPlaylist = onPlayPlaylist,
-              onDeletePlaylist = onDeletePlaylist,
-            )
-          }
-
-          item {
-            LibraryOrganizationControls(
-              categories = uiState.availableCategories,
-              selectedCategory = uiState.selectedCategory,
-              showFavoritesOnly = uiState.showFavoritesOnly,
-              totalTrackCount = uiState.allTracks.size,
-              favoriteTrackCount = uiState.favoriteTrackCount,
-              searchQuery = uiState.searchQuery,
-              onSelectCategory = onSelectCategory,
-              onSetShowFavoritesOnly = onSetShowFavoritesOnly,
-              onSearchQueryChanged = onSearchQueryChanged,
-            )
-          }
-
-          if (uiState.isSelectionMode) {
-            item {
-              val visibleIds = uiState.tracks.map { it.id }
-              val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in uiState.selectedTrackIds }
-              BulkSelectionBar(
-                selectedCount = uiState.selectedTrackIds.size,
-                allVisibleSelected = allVisibleSelected,
-                onToggleSelectAll = onToggleSelectAllVisible,
-                onOpenBulkRename = onOpenBulkRenameDialog,
+        if (showDualColumnStudio) {
+          Row(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxHeight()
+              .padding(horizontal = 24.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+          ) {
+            LazyColumn(
+              modifier = Modifier
+                .weight(1.05f)
+                .fillMaxHeight(),
+              contentPadding = PaddingValues(bottom = 24.dp),
+              verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+              item {
+                StudioHeader(
+                  themeMode = uiState.themeMode,
+                  onSelectThemeMode = onSelectThemeMode,
+                  currentTrack = uiState.currentTrack,
+                  isQuickSavingMp3 = uiState.isQuickSavingMp3,
+                  onQuickSaveCurrentMp3 = onQuickSaveCurrentMp3,
+                  showRestoreWaveformButton = !uiState.showBottomWaveformBar,
+                  onRestoreBottomWaveform = { onSetBottomWaveformVisible(true) },
+                )
+              }
+              uiState.quickMp3StatusMessage?.let { status ->
+                item {
+                  QuickStatusBanner(
+                    message = status,
+                    onDismiss = onDismissQuickMp3Status,
+                  )
+                }
+              }
+              item {
+                MusicPromptGeneratorCard(
+                  promptInput = uiState.promptInput,
+                  selectedEngine = uiState.selectedEngine,
+                  isGenerating = uiState.isGenerating,
+                  errorMessage = uiState.errorMessage,
+                  onPromptChanged = onPromptChanged,
+                  onSelectEngine = onSelectEngine,
+                  onApplyPreset = onApplyPreset,
+                  onGenerateClick = onGenerateTrack,
+                  isBusyExternal = uiState.generatingResourceId != null,
+                )
+              }
+              item {
+                MultiTrackMergerCard(
+                  allTracks = uiState.allTracks,
+                  state = uiState.mergeMixer,
+                  onToggleTrackSelection = onToggleMergeTrackSelection,
+                  onStemGainChange = onMergeStemGainChange,
+                  onLoopShorterStemsChange = onMergeLoopShorterStemsChange,
+                  onTitleChanged = onMergeTitleChanged,
+                  onAutoPickBandStems = onAutoPickBandStems,
+                  onMergeTracks = onMergeSelectedTracks,
+                  onMergeAndSaveMp3 = onMergeAndSaveMp3,
+                )
+              }
+              item {
+                StudioSectionTabRow(
+                  selectedTab = uiState.studioSectionTab,
+                  historyCount = uiState.totalHistoryCount,
+                  trackCount = uiState.allTracks.size,
+                  projectCount = uiState.projects.size,
+                  onSelectTab = onSelectStudioSectionTab,
+                )
+              }
+              studioTabContentItems(
+                uiState = uiState,
+                onSelectHistoryTypeFilter = onSelectHistoryTypeFilter,
+                onHistorySearchQueryChanged = onHistorySearchQueryChanged,
+                onPlayHistoryItem = onPlayHistoryItem,
+                onReuseHistoryPrompt = onReuseHistoryPrompt,
+                onDeleteHistoryEntry = onDeleteHistoryEntry,
+                onClearAllHistory = onClearAllHistory,
+                onGenerateSoundResource = onGenerateSoundResource,
+                onPromptChanged = onPromptChanged,
+                onGenerateTrack = onGenerateTrack,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onOpenNotificationSettings = onOpenNotificationSettings,
+                onOpenSaveProjectDialog = onOpenSaveProjectDialog,
+                onQuickSaveActiveProject = onQuickSaveActiveProject,
+                onLoadProject = onLoadProject,
+                onDeleteProject = onDeleteProject,
+                onDismissProjectStatus = onDismissProjectStatus,
+                onDismissAutoTagBanner = onDismissAutoTagBanner,
+                onToggleSelectionMode = onToggleSelectionMode,
+                onOpenUrlDownloadDialog = onOpenUrlDownloadDialog,
+                onImportAudioClick = onImportAudioClick,
+                onOpenCreatePlaylistDialog = onOpenCreatePlaylistDialog,
+                onSelectPlaylistFilter = onSelectPlaylistFilter,
+                onPlayPlaylist = onPlayPlaylist,
+                onDeletePlaylist = onDeletePlaylist,
+                onSelectCategory = onSelectCategory,
+                onSetShowFavoritesOnly = onSetShowFavoritesOnly,
+                onSearchQueryChanged = onSearchQueryChanged,
+                onToggleSelectAllVisible = onToggleSelectAllVisible,
+                onOpenBulkRenameDialog = onOpenBulkRenameDialog,
                 onExitSelectionMode = onExitSelectionMode,
+                onToggleTrackSelection = onToggleTrackSelection,
+                onEnterSelectionWithTrack = onEnterSelectionWithTrack,
+                onTogglePlayPause = onTogglePlayPause,
+                onSelectTrack = onSelectTrack,
+                onToggleTrackFavorite = onToggleTrackFavorite,
+                onOpenTrackPlaylistsDialog = onOpenTrackPlaylistsDialog,
+                onEditOrganizationClick = onEditOrganizationClick,
+                onTrimTrackClick = onTrimTrackClick,
+                onExportMp3Click = onExportMp3Click,
+                onDeleteTrack = onDeleteTrack,
+              )
+            }
+
+            Column(
+              modifier = Modifier
+                .weight(0.95f)
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+              Text(
+                text = stringResource(R.string.player_section_title),
+                style = MaterialTheme.typography.titleLarge,
+                color = colorScheme.onBackground,
+              )
+              CustomAudioPlayer(
+                track = uiState.currentTrack,
+                playbackState = uiState.playback,
+                bufferDiagnostics = uiState.activeBufferDiagnostics,
+                canSkipPrevious = uiState.canSkipPrevious,
+                canSkipNext = uiState.canSkipNext,
+                onTogglePlayPause = onTogglePlayPause,
+                onPlay = onPlay,
+                onPause = onPause,
+                onStop = onStop,
+                onBeginSeek = onBeginSeek,
+                onPreviewSeek = onPreviewSeek,
+                onCommitSeek = onCommitSeek,
+                onSeekBy = onSeekBy,
+                onSkipPrevious = onSkipPrevious,
+                onSkipNext = onSkipNext,
+                onToggleLoop = onToggleLoop,
+                onVolumeChange = onVolumeChange,
+                onToggleMute = onToggleMute,
+                onPitchChange = onPitchChange,
+                onStepPitch = onStepPitch,
+                onResetPitch = onResetPitch,
+                onSelectReverbPreset = onSelectReverbPreset,
+                onReverbWetMixChange = onReverbWetMixChange,
+                onReverbRoomSizeChange = onReverbRoomSizeChange,
+                onReverbDampingChange = onReverbDampingChange,
+                onReverbEngineModeChange = onReverbEngineModeChange,
+                onResetReverb = onResetReverb,
+                onSaveReverbCopy = onSaveReverbCopy,
+                isApplyingReverb = uiState.isApplyingReverb,
+                onEqualizerEnabledChange = onEqualizerEnabledChange,
+                onSelectEqualizerPreset = onSelectEqualizerPreset,
+                onEqualizerBandGainChange = onEqualizerBandGainChange,
+                onResetEqualizer = onResetEqualizer,
+                loudnessTarget = uiState.loudnessTarget,
+                autoPostGainEnabled = uiState.autoPostGainEnabled,
+                isNormalizing = uiState.isNormalizing,
+                onAutoPostGainEnabledChange = onAutoPostGainEnabledChange,
+                onSelectLoudnessTarget = onSelectLoudnessTarget,
+                onNormalizeActiveTrack = onNormalizeActiveTrack,
+                onNormalizeLibrary = onNormalizeLibrary,
+                onCrossfadeEnabledChange = onCrossfadeEnabledChange,
+                onCrossfadeDurationChange = onCrossfadeDurationChange,
+                onSelectCrossfadePreset = onSelectCrossfadePreset,
+                interactionMode = uiState.waveformInteractionMode,
+                onSelectInteractionMode = onSelectWaveformInteractionMode,
+                onPaintEnvelopePoint = onPaintTrackEnvelopePoint,
+                onMuteSegment = onMuteTrackSegment,
+                onToggleMuteTap = onToggleMuteAtTap,
+                onResetAudioEnvelope = onResetTrackAudioEnvelope,
               )
             }
           }
+        } else {
+          when (uiState.activeDestination) {
+            StudioDestination.STUDIO -> {
+              val studioListState = rememberLazyListState()
+              LazyColumn(
+                state = studioListState,
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .windowInsetsPadding(WindowInsets(0.dp))
+                  .testTag("studio_page_scroll"),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+              ) {
+                item {
+                  StudioHeader(
+                    themeMode = uiState.themeMode,
+                    onSelectThemeMode = onSelectThemeMode,
+                    currentTrack = uiState.currentTrack,
+                    isQuickSavingMp3 = uiState.isQuickSavingMp3,
+                    onQuickSaveCurrentMp3 = onQuickSaveCurrentMp3,
+                    showRestoreWaveformButton = !uiState.showBottomWaveformBar,
+                    onRestoreBottomWaveform = { onSetBottomWaveformVisible(true) },
+                  )
+                }
 
-          if (uiState.isInitializing) {
-            item { LoadingTracksPlaceholder() }
-          } else if (uiState.tracks.isEmpty()) {
-            item {
-              EmptyTracksCard(
-                showFavoritesOnly = uiState.showFavoritesOnly,
-                selectedPlaylistName = uiState.selectedPlaylist?.name,
-                onShowAllTracks = {
-                  onSelectPlaylistFilter(null)
-                  onSetShowFavoritesOnly(false)
-                },
-              )
+                uiState.quickMp3StatusMessage?.let { status ->
+                  item {
+                    QuickStatusBanner(
+                      message = status,
+                      onDismiss = onDismissQuickMp3Status,
+                    )
+                  }
+                }
+
+                item {
+                  MusicPromptGeneratorCard(
+                    promptInput = uiState.promptInput,
+                    selectedEngine = uiState.selectedEngine,
+                    isGenerating = uiState.isGenerating,
+                    errorMessage = uiState.errorMessage,
+                    onPromptChanged = onPromptChanged,
+                    onSelectEngine = onSelectEngine,
+                    onApplyPreset = onApplyPreset,
+                    onGenerateClick = onGenerateTrack,
+                    isBusyExternal = uiState.generatingResourceId != null,
+                  )
+                }
+
+                item {
+                  CustomAudioPlayer(
+                    track = uiState.currentTrack,
+                    playbackState = uiState.playback,
+                    bufferDiagnostics = uiState.activeBufferDiagnostics,
+                    canSkipPrevious = uiState.canSkipPrevious,
+                    canSkipNext = uiState.canSkipNext,
+                    onTogglePlayPause = onTogglePlayPause,
+                    onPlay = onPlay,
+                    onPause = onPause,
+                    onStop = onStop,
+                    onBeginSeek = onBeginSeek,
+                    onPreviewSeek = onPreviewSeek,
+                    onCommitSeek = onCommitSeek,
+                    onSeekBy = onSeekBy,
+                    onSkipPrevious = onSkipPrevious,
+                    onSkipNext = onSkipNext,
+                    onToggleLoop = onToggleLoop,
+                    onVolumeChange = onVolumeChange,
+                    onToggleMute = onToggleMute,
+                    onPitchChange = onPitchChange,
+                    onStepPitch = onStepPitch,
+                    onResetPitch = onResetPitch,
+                    onSelectReverbPreset = onSelectReverbPreset,
+                    onReverbWetMixChange = onReverbWetMixChange,
+                    onReverbRoomSizeChange = onReverbRoomSizeChange,
+                    onReverbDampingChange = onReverbDampingChange,
+                    onReverbEngineModeChange = onReverbEngineModeChange,
+                    onResetReverb = onResetReverb,
+                    onSaveReverbCopy = onSaveReverbCopy,
+                    isApplyingReverb = uiState.isApplyingReverb,
+                    onEqualizerEnabledChange = onEqualizerEnabledChange,
+                    onSelectEqualizerPreset = onSelectEqualizerPreset,
+                    onEqualizerBandGainChange = onEqualizerBandGainChange,
+                    onResetEqualizer = onResetEqualizer,
+                    loudnessTarget = uiState.loudnessTarget,
+                    autoPostGainEnabled = uiState.autoPostGainEnabled,
+                    isNormalizing = uiState.isNormalizing,
+                    onAutoPostGainEnabledChange = onAutoPostGainEnabledChange,
+                    onSelectLoudnessTarget = onSelectLoudnessTarget,
+                    onNormalizeActiveTrack = onNormalizeActiveTrack,
+                    onNormalizeLibrary = onNormalizeLibrary,
+                    onCrossfadeEnabledChange = onCrossfadeEnabledChange,
+                    onCrossfadeDurationChange = onCrossfadeDurationChange,
+                    onSelectCrossfadePreset = onSelectCrossfadePreset,
+                    interactionMode = uiState.waveformInteractionMode,
+                    onSelectInteractionMode = onSelectWaveformInteractionMode,
+                    onPaintEnvelopePoint = onPaintTrackEnvelopePoint,
+                    onMuteSegment = onMuteTrackSegment,
+                    onToggleMuteTap = onToggleMuteAtTap,
+                    onResetAudioEnvelope = onResetTrackAudioEnvelope,
+                  )
+                }
+
+                item {
+                  MultiTrackMergerCard(
+                    allTracks = uiState.allTracks,
+                    state = uiState.mergeMixer,
+                    onToggleTrackSelection = onToggleMergeTrackSelection,
+                    onStemGainChange = onMergeStemGainChange,
+                    onLoopShorterStemsChange = onMergeLoopShorterStemsChange,
+                    onTitleChanged = onMergeTitleChanged,
+                    onAutoPickBandStems = onAutoPickBandStems,
+                    onMergeTracks = onMergeSelectedTracks,
+                    onMergeAndSaveMp3 = onMergeAndSaveMp3,
+                  )
+                }
+
+                item {
+                  StudioSectionTabRow(
+                    selectedTab = uiState.studioSectionTab,
+                    historyCount = uiState.totalHistoryCount,
+                    trackCount = uiState.allTracks.size,
+                    projectCount = uiState.projects.size,
+                    onSelectTab = onSelectStudioSectionTab,
+                  )
+                }
+
+                studioTabContentItems(
+                  uiState = uiState,
+                  onSelectHistoryTypeFilter = onSelectHistoryTypeFilter,
+                  onHistorySearchQueryChanged = onHistorySearchQueryChanged,
+                  onPlayHistoryItem = onPlayHistoryItem,
+                  onReuseHistoryPrompt = onReuseHistoryPrompt,
+                  onDeleteHistoryEntry = onDeleteHistoryEntry,
+                  onClearAllHistory = onClearAllHistory,
+                  onGenerateSoundResource = onGenerateSoundResource,
+                  onPromptChanged = onPromptChanged,
+                  onGenerateTrack = onGenerateTrack,
+                  onRequestNotificationPermission = onRequestNotificationPermission,
+                  onOpenNotificationSettings = onOpenNotificationSettings,
+                  onOpenSaveProjectDialog = onOpenSaveProjectDialog,
+                  onQuickSaveActiveProject = onQuickSaveActiveProject,
+                  onLoadProject = onLoadProject,
+                  onDeleteProject = onDeleteProject,
+                  onDismissProjectStatus = onDismissProjectStatus,
+                  onDismissAutoTagBanner = onDismissAutoTagBanner,
+                  onToggleSelectionMode = onToggleSelectionMode,
+                  onOpenUrlDownloadDialog = onOpenUrlDownloadDialog,
+                  onImportAudioClick = onImportAudioClick,
+                  onOpenCreatePlaylistDialog = onOpenCreatePlaylistDialog,
+                  onSelectPlaylistFilter = onSelectPlaylistFilter,
+                  onPlayPlaylist = onPlayPlaylist,
+                  onDeletePlaylist = onDeletePlaylist,
+                  onSelectCategory = onSelectCategory,
+                  onSetShowFavoritesOnly = onSetShowFavoritesOnly,
+                  onSearchQueryChanged = onSearchQueryChanged,
+                  onToggleSelectAllVisible = onToggleSelectAllVisible,
+                  onOpenBulkRenameDialog = onOpenBulkRenameDialog,
+                  onExitSelectionMode = onExitSelectionMode,
+                  onToggleTrackSelection = onToggleTrackSelection,
+                  onEnterSelectionWithTrack = onEnterSelectionWithTrack,
+                  onTogglePlayPause = onTogglePlayPause,
+                  onSelectTrack = onSelectTrack,
+                  onToggleTrackFavorite = onToggleTrackFavorite,
+                  onOpenTrackPlaylistsDialog = onOpenTrackPlaylistsDialog,
+                  onEditOrganizationClick = onEditOrganizationClick,
+                  onTrimTrackClick = onTrimTrackClick,
+                  onExportMp3Click = onExportMp3Click,
+                  onDeleteTrack = onDeleteTrack,
+                )
+
+                item { Spacer(modifier = Modifier.height(12.dp)) }
+              }
             }
-          } else {
-            items(uiState.tracks, key = { it.id }) { track ->
-              val isSelected = track.id == uiState.currentTrack?.id
-              val isPlayingThis = isSelected && uiState.playback.isPlaying
-              val isBulkSelected = track.id in uiState.selectedTrackIds
-              GeneratedTrackRow(
-                track = track,
-                isSelected = isSelected,
-                isPlaying = isPlayingThis,
-                isSelectionMode = uiState.isSelectionMode,
-                isBulkSelected = isBulkSelected,
-                onToggleBulkSelect = { onToggleTrackSelection(track.id) },
-                onLongClick = { onEnterSelectionWithTrack(track.id) },
-                onClick = {
-                  if (isSelected) onTogglePlayPause() else onSelectTrack(track)
-                },
-                onToggleFavorite = { onToggleTrackFavorite(track) },
-                onAddToPlaylist = { onOpenTrackPlaylistsDialog(track) },
-                onEditOrganization = { onEditOrganizationClick(track) },
-                onTrimTrack = { onTrimTrackClick(track) },
-                onExportMp3 = { onExportMp3Click(track) },
-                onDelete = { onDeleteTrack(track.id) },
-              )
+
+            StudioDestination.PIANO -> {
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .verticalScroll(rememberScrollState())
+                  .padding(horizontal = 16.dp, vertical = 14.dp),
+                contentAlignment = Alignment.TopCenter,
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                  uiState.quickMp3StatusMessage?.let { status ->
+                    QuickStatusBanner(
+                      message = status,
+                      onDismiss = onDismissQuickMp3Status,
+                    )
+                  }
+                  PianoStudioPage(
+                    state = uiState.pianoState,
+                    onSelectVoice = onSelectPianoVoice,
+                    onSelectProgression = onSelectPianoProgression,
+                    onShiftOctave = onShiftPianoOctave,
+                    onStepBpm = onStepPianoBpm,
+                    onPlayKey = onPlayPianoKey,
+                    onPlayChord = onPlayPianoChord,
+                    onToggleRecording = onTogglePianoRecording,
+                    onClearRecording = onClearPianoRecording,
+                    onPreviewPattern = onPreviewPianoPattern,
+                    onGenerateTrack = onGeneratePianoTrack,
+                    onOpenStudio = { onSelectDestination(StudioDestination.STUDIO) },
+                  )
+                  Spacer(modifier = Modifier.height(12.dp))
+                }
+              }
+            }
+
+            StudioDestination.GUITAR -> {
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .verticalScroll(rememberScrollState())
+                  .padding(horizontal = 16.dp, vertical = 14.dp),
+                contentAlignment = Alignment.TopCenter,
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                  uiState.quickMp3StatusMessage?.let { status ->
+                    QuickStatusBanner(
+                      message = status,
+                      onDismiss = onDismissQuickMp3Status,
+                    )
+                  }
+                  GuitarStudioPage(
+                    state = uiState.guitarState,
+                    onSelectVoice = onSelectGuitarVoice,
+                    onSelectChord = onSelectGuitarChord,
+                    onAddChordToSequence = onAddGuitarChordToSequence,
+                    onRemoveChordFromSequenceAt = onRemoveGuitarChordFromSequenceAt,
+                    onApplyProgressionPreset = onApplyGuitarProgressionPreset,
+                    onSelectStrumStyle = onSelectGuitarStrumStyle,
+                    onStepBpm = onStepGuitarBpm,
+                    onPluckString = onPluckGuitarString,
+                    onStrumChord = onStrumGuitarChord,
+                    onToggleRecording = onToggleGuitarRecording,
+                    onClearRecording = onClearGuitarRecording,
+                    onPreviewPattern = onPreviewGuitarPattern,
+                    onGenerateTrack = onGenerateGuitarTrack,
+                    onOpenStudio = { onSelectDestination(StudioDestination.STUDIO) },
+                  )
+                  Spacer(modifier = Modifier.height(12.dp))
+                }
+              }
+            }
+
+            StudioDestination.DRUMS -> {
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .verticalScroll(rememberScrollState())
+                  .padding(horizontal = 16.dp, vertical = 14.dp),
+                contentAlignment = Alignment.TopCenter,
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                  uiState.quickMp3StatusMessage?.let { status ->
+                    QuickStatusBanner(
+                      message = status,
+                      onDismiss = onDismissQuickMp3Status,
+                    )
+                  }
+                  DrumStudioPage(
+                    sequencerState = uiState.stepSequencer,
+                    metronomeState = uiState.metronome,
+                    drumState = uiState.drumState,
+                    onSelectDrumKit = onSelectDrumKit,
+                    onTriggerDrumPad = onTriggerDrumPad,
+                    onToggleDrumPadRecording = onToggleDrumPadRecording,
+                    onClearDrumPadRecording = onClearDrumPadRecording,
+                    onPreviewDrumPadTake = onPreviewDrumPadTake,
+                    onToggleSequencerStep = onToggleSequencerStep,
+                    onToggleSequencerPlayStop = onToggleSequencerPlayStop,
+                    onClearSequencerPattern = onClearSequencerPattern,
+                    onApplySequencerPreset = onApplySequencerPreset,
+                    onStepSequencerBpm = onStepSequencerBpm,
+                    onToggleSequencerBpmSync = onToggleSequencerBpmSync,
+                    onCycleSequencerSwing = onCycleSequencerSwing,
+                    onGenerateDrumTrack = onGenerateDrumTrack,
+                    onToggleMetronomePlayStop = onToggleMetronomePlayStop,
+                    onStepMetronomeBpm = onStepMetronomeBpm,
+                    onToggleMetronomeBpmSync = onToggleMetronomeBpmSync,
+                    onMetronomeVolumeChange = onMetronomeVolumeChange,
+                    onMetronomePitchHzChange = onMetronomePitchHzChange,
+                    onSelectMetronomeToneStyle = onSelectMetronomeToneStyle,
+                    onSelectMetronomeTimeSignature = onSelectMetronomeTimeSignature,
+                    onToggleMetronomeAccentDownbeat = onToggleMetronomeAccentDownbeat,
+                    onTapMetronomeTempo = onTapMetronomeTempo,
+                    onOpenStudio = { onSelectDestination(StudioDestination.STUDIO) },
+                  )
+                  Spacer(modifier = Modifier.height(12.dp))
+                }
+              }
             }
           }
+        }
+      }
+    }
+  }
+}
 
-          item { Spacer(modifier = Modifier.height(12.dp)) }
+@Composable
+private fun StudioNavigationBar(
+  activeDestination: StudioDestination,
+  onSelectDestination: (StudioDestination) -> Unit,
+) {
+  NavigationBar(
+    modifier = Modifier.testTag("studio_navigation_bar"),
+  ) {
+    StudioDestination.entries.forEach { dest ->
+      val (labelRes, icon) = destinationMeta(dest)
+      NavigationBarItem(
+        selected = activeDestination == dest,
+        onClick = { onSelectDestination(dest) },
+        icon = {
+          Icon(
+            imageVector = icon,
+            contentDescription = stringResource(labelRes),
+          )
+        },
+        label = {
+          Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+          )
+        },
+        modifier = Modifier.testTag(dest.testTag),
+      )
+    }
+  }
+}
+
+@Composable
+private fun StudioNavigationRail(
+  activeDestination: StudioDestination,
+  onSelectDestination: (StudioDestination) -> Unit,
+) {
+  NavigationRail(
+    modifier = Modifier.testTag("studio_navigation_rail"),
+  ) {
+    Spacer(modifier = Modifier.height(12.dp))
+    StudioDestination.entries.forEach { dest ->
+      val (labelRes, icon) = destinationMeta(dest)
+      NavigationRailItem(
+        selected = activeDestination == dest,
+        onClick = { onSelectDestination(dest) },
+        icon = {
+          Icon(
+            imageVector = icon,
+            contentDescription = stringResource(labelRes),
+          )
+        },
+        label = {
+          Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+          )
+        },
+        modifier = Modifier.testTag(dest.testTag),
+      )
+    }
+  }
+}
+
+private fun destinationMeta(dest: StudioDestination) = when (dest) {
+  StudioDestination.STUDIO -> R.string.nav_studio to Icons.Rounded.Tune
+  StudioDestination.PIANO -> R.string.nav_piano to Icons.Rounded.Piano
+  StudioDestination.GUITAR -> R.string.nav_guitar to Icons.Rounded.MusicNote
+  StudioDestination.DRUMS -> R.string.nav_drums to Icons.Rounded.Album
+}
+
+@Composable
+private fun QuickStatusBanner(
+  message: String,
+  onDismiss: () -> Unit,
+) {
+  val colorScheme = MaterialTheme.colorScheme
+  Surface(
+    shape = MaterialTheme.shapes.medium,
+    color = colorScheme.secondaryContainer,
+    border = BorderStroke(1.dp, colorScheme.secondary.copy(alpha = 0.45f)),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("quick_mp3_status_banner"),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 12.dp, vertical = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(
+        modifier = Modifier.weight(1f),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Rounded.CheckCircle,
+          contentDescription = null,
+          tint = colorScheme.onSecondaryContainer,
+          modifier = Modifier.size(18.dp),
+        )
+        Text(
+          text = message,
+          style = MaterialTheme.typography.labelMedium,
+          color = colorScheme.onSecondaryContainer,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      IconButton(
+        onClick = onDismiss,
+        modifier = Modifier.minimumInteractiveComponentSize(),
+      ) {
+        Icon(
+          imageVector = Icons.Rounded.Close,
+          contentDescription = "Dismiss status",
+          tint = colorScheme.onSecondaryContainer,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun StudioSectionTabRow(
+  selectedTab: StudioSectionTab,
+  historyCount: Int,
+  trackCount: Int,
+  projectCount: Int,
+  onSelectTab: (StudioSectionTab) -> Unit,
+) {
+  val colorScheme = MaterialTheme.colorScheme
+  val tabs = listOf(
+    StudioSectionTab.RESOURCES to stringResource(R.string.studio_tab_resources),
+    StudioSectionTab.HISTORY to "${stringResource(R.string.studio_tab_history)} ($historyCount)",
+    StudioSectionTab.LIBRARY to "${stringResource(R.string.studio_tab_library)} ($trackCount)",
+    StudioSectionTab.PROJECTS to "${stringResource(R.string.studio_tab_projects)} ($projectCount)",
+  )
+
+  SingleChoiceSegmentedButtonRow(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("studio_section_tab_row"),
+  ) {
+    tabs.forEachIndexed { idx, (tab, label) ->
+      SegmentedButton(
+        selected = selectedTab == tab,
+        onClick = { onSelectTab(tab) },
+        shape = SegmentedButtonDefaults.itemShape(index = idx, count = tabs.size),
+        colors = SegmentedButtonDefaults.colors(
+          activeContainerColor = colorScheme.primaryContainer,
+          activeContentColor = colorScheme.onPrimaryContainer,
+          inactiveContainerColor = colorScheme.surfaceContainerLow,
+          inactiveContentColor = colorScheme.onSurfaceVariant,
+        ),
+        icon = {},
+        label = {
+          Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        },
+        modifier = Modifier.testTag(tab.testTag),
+      )
+    }
+  }
+}
+
+private fun LazyListScope.studioTabContentItems(
+  uiState: SonicForgeUiState,
+  onSelectHistoryTypeFilter: (String) -> Unit,
+  onHistorySearchQueryChanged: (String) -> Unit,
+  onPlayHistoryItem: (TrackHistoryItem) -> Unit,
+  onReuseHistoryPrompt: (String) -> Unit,
+  onDeleteHistoryEntry: (String) -> Unit,
+  onClearAllHistory: () -> Unit,
+  onGenerateSoundResource: (StudioSoundResource) -> Unit,
+  onPromptChanged: (String) -> Unit,
+  onGenerateTrack: () -> Unit,
+  onRequestNotificationPermission: () -> Unit,
+  onOpenNotificationSettings: () -> Unit,
+  onOpenSaveProjectDialog: () -> Unit,
+  onQuickSaveActiveProject: () -> Unit,
+  onLoadProject: (String) -> Unit,
+  onDeleteProject: (String) -> Unit,
+  onDismissProjectStatus: () -> Unit,
+  onDismissAutoTagBanner: () -> Unit,
+  onToggleSelectionMode: () -> Unit,
+  onOpenUrlDownloadDialog: () -> Unit,
+  onImportAudioClick: () -> Unit,
+  onOpenCreatePlaylistDialog: () -> Unit,
+  onSelectPlaylistFilter: (String?) -> Unit,
+  onPlayPlaylist: (Playlist) -> Unit,
+  onDeletePlaylist: (String) -> Unit,
+  onSelectCategory: (String) -> Unit,
+  onSetShowFavoritesOnly: (Boolean) -> Unit,
+  onSearchQueryChanged: (String) -> Unit,
+  onToggleSelectAllVisible: () -> Unit,
+  onOpenBulkRenameDialog: () -> Unit,
+  onExitSelectionMode: () -> Unit,
+  onToggleTrackSelection: (String) -> Unit,
+  onEnterSelectionWithTrack: (String) -> Unit,
+  onTogglePlayPause: () -> Unit,
+  onSelectTrack: (GeneratedTrack) -> Unit,
+  onToggleTrackFavorite: (GeneratedTrack) -> Unit,
+  onOpenTrackPlaylistsDialog: (GeneratedTrack) -> Unit,
+  onEditOrganizationClick: (GeneratedTrack) -> Unit,
+  onTrimTrackClick: (GeneratedTrack) -> Unit,
+  onExportMp3Click: (GeneratedTrack) -> Unit,
+  onDeleteTrack: (String) -> Unit,
+) {
+  when (uiState.studioSectionTab) {
+    StudioSectionTab.HISTORY -> {
+      item {
+        TrackHistoryCard(
+          historyItems = uiState.trackHistory,
+          totalHistoryCount = uiState.totalHistoryCount,
+          selectedTypeFilter = uiState.historyTypeFilter,
+          searchQuery = uiState.historySearchQuery,
+          currentTrackId = uiState.currentTrack?.id,
+          isPlaying = uiState.playback.isPlaying,
+          onSelectTypeFilter = onSelectHistoryTypeFilter,
+          onSearchQueryChanged = onHistorySearchQueryChanged,
+          onPlayHistoryItem = onPlayHistoryItem,
+          onReusePrompt = onReuseHistoryPrompt,
+          onDeleteHistoryItem = onDeleteHistoryEntry,
+          onClearAllHistory = onClearAllHistory,
+        )
+      }
+    }
+
+    StudioSectionTab.RESOURCES -> {
+      item {
+        SoundResourcesCard(
+          generatingResourceId = uiState.generatingResourceId,
+          promptInput = uiState.promptInput,
+          isCustomGenerating = uiState.isGenerating,
+          errorMessage = uiState.errorMessage,
+          onGenerateResource = onGenerateSoundResource,
+          onPromptChanged = onPromptChanged,
+          onGenerateCustomPrompt = onGenerateTrack,
+        )
+      }
+      item {
+        BackgroundPermissionsCard(
+          notificationPermission = uiState.notificationPermission,
+          onRequestNotificationPermission = onRequestNotificationPermission,
+          onOpenNotificationSettings = onOpenNotificationSettings,
+        )
+      }
+    }
+
+    StudioSectionTab.PROJECTS -> {
+      item {
+        StudioProjectsCard(
+          projects = uiState.projects,
+          activeProjectId = uiState.activeProjectId,
+          currentTrack = uiState.currentTrack,
+          allTracks = uiState.allTracks,
+          playbackState = uiState.playback,
+          sequencerState = uiState.stepSequencer,
+          isSavingProject = uiState.isSavingProject,
+          statusMessage = uiState.projectStatusMessage,
+          onOpenSaveDialog = onOpenSaveProjectDialog,
+          onQuickSaveProject = onQuickSaveActiveProject,
+          onLoadProject = onLoadProject,
+          onDeleteProject = onDeleteProject,
+          onDismissStatus = onDismissProjectStatus,
+        )
+      }
+    }
+
+    StudioSectionTab.LIBRARY -> {
+      uiState.latestAutoTagResult?.let { tagResult ->
+        item {
+          AiAutoTagNoticeCard(
+            result = tagResult,
+            onDismiss = onDismissAutoTagBanner,
+          )
+        }
+      }
+      item {
+        TrackLibrarySectionHeader(
+          trackCount = uiState.tracks.size,
+          hasAnyTracks = uiState.allTracks.isNotEmpty(),
+          isSelectionMode = uiState.isSelectionMode,
+          onToggleSelectionMode = onToggleSelectionMode,
+          onDownloadUrlClick = onOpenUrlDownloadDialog,
+          onImportAudioClick = onImportAudioClick,
+        )
+      }
+      item {
+        PlaylistsShelfSection(
+          playlists = uiState.playlists,
+          selectedPlaylistId = uiState.selectedPlaylistId,
+          onCreatePlaylistClick = onOpenCreatePlaylistDialog,
+          onSelectPlaylist = onSelectPlaylistFilter,
+          onPlayPlaylist = onPlayPlaylist,
+          onDeletePlaylist = onDeletePlaylist,
+        )
+      }
+      item {
+        LibraryOrganizationControls(
+          categories = uiState.availableCategories,
+          selectedCategory = uiState.selectedCategory,
+          showFavoritesOnly = uiState.showFavoritesOnly,
+          totalTrackCount = uiState.allTracks.size,
+          favoriteTrackCount = uiState.favoriteTrackCount,
+          searchQuery = uiState.searchQuery,
+          onSelectCategory = onSelectCategory,
+          onSetShowFavoritesOnly = onSetShowFavoritesOnly,
+          onSearchQueryChanged = onSearchQueryChanged,
+        )
+      }
+      if (uiState.isSelectionMode) {
+        item {
+          val visibleIds = uiState.tracks.map { it.id }
+          val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in uiState.selectedTrackIds }
+          BulkSelectionBar(
+            selectedCount = uiState.selectedTrackIds.size,
+            allVisibleSelected = allVisibleSelected,
+            onToggleSelectAll = onToggleSelectAllVisible,
+            onOpenBulkRename = onOpenBulkRenameDialog,
+            onExitSelectionMode = onExitSelectionMode,
+          )
+        }
+      }
+      if (uiState.isInitializing) {
+        item { LoadingTracksPlaceholder() }
+      } else if (uiState.tracks.isEmpty()) {
+        item {
+          EmptyTracksCard(
+            showFavoritesOnly = uiState.showFavoritesOnly,
+            selectedPlaylistName = uiState.selectedPlaylist?.name,
+            onShowAllTracks = {
+              onSelectPlaylistFilter(null)
+              onSetShowFavoritesOnly(false)
+            },
+          )
+        }
+      } else {
+        items(uiState.tracks, key = { it.id }) { track ->
+          val isSelected = track.id == uiState.currentTrack?.id
+          val isPlayingThis = isSelected && uiState.playback.isPlaying
+          val isBulkSelected = track.id in uiState.selectedTrackIds
+          GeneratedTrackRow(
+            track = track,
+            isSelected = isSelected,
+            isPlaying = isPlayingThis,
+            isSelectionMode = uiState.isSelectionMode,
+            isBulkSelected = isBulkSelected,
+            onToggleBulkSelect = { onToggleTrackSelection(track.id) },
+            onLongClick = { onEnterSelectionWithTrack(track.id) },
+            onClick = {
+              if (isSelected) onTogglePlayPause() else onSelectTrack(track)
+            },
+            onToggleFavorite = { onToggleTrackFavorite(track) },
+            onAddToPlaylist = { onOpenTrackPlaylistsDialog(track) },
+            onEditOrganization = { onEditOrganizationClick(track) },
+            onTrimTrack = { onTrimTrackClick(track) },
+            onExportMp3 = { onExportMp3Click(track) },
+            onDelete = { onDeleteTrack(track.id) },
+          )
         }
       }
     }
@@ -1251,13 +1734,16 @@ internal fun TrackOrganizationDialog(
 private fun StudioHeader(
   themeMode: ThemeMode,
   onSelectThemeMode: (ThemeMode) -> Unit,
+  currentTrack: GeneratedTrack? = null,
+  isQuickSavingMp3: Boolean = false,
+  onQuickSaveCurrentMp3: (GeneratedTrack) -> Unit = {},
   showRestoreWaveformButton: Boolean = false,
   onRestoreBottomWaveform: () -> Unit = {},
 ) {
   val colorScheme = MaterialTheme.colorScheme
   Column(
     modifier = Modifier.fillMaxWidth(),
-    verticalArrangement = Arrangement.spacedBy(12.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     Row(
       modifier = Modifier.fillMaxWidth(),
@@ -1282,7 +1768,8 @@ private fun StudioHeader(
 
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
       ) {
         if (showRestoreWaveformButton) {
           OutlinedButton(
@@ -1304,30 +1791,41 @@ private fun StudioHeader(
               text = stringResource(R.string.restore_bottom_waveform_label),
               style = MaterialTheme.typography.labelSmall,
               color = colorScheme.primary,
+              maxLines = 1,
             )
           }
         }
 
-        Surface(
-          shape = RoundedCornerShape(12.dp),
-          color = colorScheme.surfaceContainer,
-          border = BorderStroke(1.dp, colorScheme.outline),
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        if (currentTrack != null) {
+          OutlinedButton(
+            onClick = { onQuickSaveCurrentMp3(currentTrack) },
+            enabled = !isQuickSavingMp3,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.6f)),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("quick_save_mp3_button"),
           ) {
-            Icon(
-              imageVector = Icons.Rounded.GraphicEq,
-              contentDescription = null,
-              tint = colorScheme.primary,
-              modifier = Modifier.size(16.dp),
-            )
+            if (isQuickSavingMp3) {
+              CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            } else {
+              Icon(
+                imageVector = Icons.Rounded.SaveAlt,
+                contentDescription = stringResource(R.string.cd_export_mp3),
+                tint = colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+              )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-              text = "Free · Room",
+              text = if (isQuickSavingMp3) {
+                stringResource(R.string.saving_mp3_quick_label)
+              } else {
+                stringResource(R.string.save_mp3_quick_button)
+              },
               style = MaterialTheme.typography.labelSmall,
-              color = colorScheme.onSurfaceVariant,
+              color = colorScheme.primary,
+              maxLines = 1,
             )
           }
         }
@@ -1346,6 +1844,7 @@ internal fun BottomWaveformBar(
   track: GeneratedTrack?,
   playbackState: com.example.audio.AudioPlaybackState,
   canSkipNext: Boolean,
+  applyNavBarPadding: Boolean = true,
   onTogglePlayPause: () -> Unit,
   onSkipNext: () -> Unit,
   onBeginSeek: () -> Unit,
@@ -1374,7 +1873,7 @@ internal fun BottomWaveformBar(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .then(if (applyNavBarPadding) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier)
         .padding(horizontal = 10.dp, vertical = 6.dp),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1657,187 +2156,7 @@ private fun BackgroundPermissionsCard(
   }
 }
 
-@Composable
-private fun PromptSynthesizerCard(
-  promptInput: String,
-  selectedEngine: GenerationEngine,
-  isGenerating: Boolean,
-  errorMessage: String?,
-  onSelectEngine: (GenerationEngine) -> Unit,
-  onPromptChanged: (String) -> Unit,
-  onApplyPreset: (String) -> Unit,
-  onGenerateTrack: () -> Unit,
-) {
-  val colorScheme = MaterialTheme.colorScheme
-  val engineOptions = listOf(
-    GenerationEngine.HF_AUDIO_LDM to stringResource(R.string.engine_hf_audioldm),
-    GenerationEngine.HF_MUSICGEN to stringResource(R.string.engine_hf_musicgen),
-    GenerationEngine.HF_STABLE_AUDIO to stringResource(R.string.engine_hf_stable_audio),
-    GenerationEngine.FOURIER_SYNTH to stringResource(R.string.engine_fourier_dsp),
-  )
-  val engineDetail = when (selectedEngine) {
-    GenerationEngine.HF_AUDIO_LDM -> "Model: haoheliu/audioldm (Latent Diffusion + STFT, free HF Space)"
-    GenerationEngine.HF_MUSICGEN -> "Model: facebook/MusicGen (Transformer EnCodec, free HF Space)"
-    GenerationEngine.HF_STABLE_AUDIO -> "Model: Stable-Audio-Open (Latent Diffusion, free HF Space)"
-    GenerationEngine.FOURIER_SYNTH -> "Offline harmonic Fourier series synthesizer (no network required)"
-  }
-
-  Surface(
-    shape = MaterialTheme.shapes.large,
-    color = colorScheme.surfaceContainerLow,
-    border = BorderStroke(1.dp, colorScheme.outlineVariant),
-  ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(16.dp),
-      verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          engineOptions.forEach { (engine, label) ->
-            FilterChip(
-              selected = selectedEngine == engine,
-              enabled = !isGenerating,
-              onClick = { onSelectEngine(engine) },
-              label = {
-                Text(
-                  text = label,
-                  style = MaterialTheme.typography.labelSmall,
-                )
-              },
-              colors = FilterChipDefaults.filterChipColors(
-                selectedContainerColor = colorScheme.secondaryContainer,
-                selectedLabelColor = colorScheme.onSecondaryContainer,
-              ),
-              modifier = Modifier.testTag("engine_chip_${engine.testTagSuffix}"),
-            )
-          }
-        }
-        Text(
-          text = engineDetail,
-          style = MaterialTheme.typography.labelSmall,
-          color = colorScheme.onSurfaceVariant,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-      }
-
-      OutlinedTextField(
-        value = promptInput,
-        onValueChange = onPromptChanged,
-        label = { Text(stringResource(R.string.prompt_input_label)) },
-        placeholder = { Text(stringResource(R.string.prompt_input_placeholder)) },
-        singleLine = true,
-        enabled = !isGenerating,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { onGenerateTrack() }),
-        colors = OutlinedTextFieldDefaults.colors(
-          focusedBorderColor = colorScheme.primary,
-          unfocusedBorderColor = colorScheme.outline,
-          focusedLabelColor = colorScheme.primary,
-          cursorColor = colorScheme.primary,
-        ),
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("prompt_input_field"),
-      )
-
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        quickPresets.forEach { preset ->
-          val label = preset.split(" ").take(2).joinToString(" ")
-          FilterChip(
-            selected = promptInput == preset,
-            onClick = { onApplyPreset(preset) },
-            label = {
-              Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-              )
-            },
-            colors = FilterChipDefaults.filterChipColors(
-              selectedContainerColor = colorScheme.primaryContainer,
-              selectedLabelColor = colorScheme.onPrimaryContainer,
-            ),
-            modifier = Modifier.testTag("preset_chip_${label.lowercase().replace(" ", "_")}"),
-          )
-        }
-      }
-
-      AnimatedVisibility(visible = errorMessage != null) {
-        errorMessage?.let { msg ->
-          Surface(
-            shape = MaterialTheme.shapes.small,
-            color = colorScheme.tertiaryContainer,
-            border = BorderStroke(1.dp, colorScheme.tertiary.copy(alpha = 0.45f)),
-          ) {
-            Text(
-              text = msg,
-              style = MaterialTheme.typography.bodyMedium,
-              color = colorScheme.onTertiaryContainer,
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-          }
-        }
-      }
-
-      Button(
-        onClick = onGenerateTrack,
-        enabled = !isGenerating,
-        colors = ButtonDefaults.buttonColors(
-          containerColor = colorScheme.primary,
-          contentColor = colorScheme.onPrimary,
-        ),
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(50.dp)
-          .testTag("generate_track_button"),
-      ) {
-        if (isGenerating) {
-          CircularProgressIndicator(
-            modifier = Modifier.size(18.dp),
-            strokeWidth = 2.dp,
-            color = colorScheme.onPrimary,
-          )
-          Spacer(modifier = Modifier.width(10.dp))
-          val generatingResId = if (selectedEngine == GenerationEngine.FOURIER_SYNTH) {
-            R.string.generating_track_label
-          } else {
-            R.string.generating_hf_space_label
-          }
-          Text(
-            text = stringResource(generatingResId),
-            style = MaterialTheme.typography.labelLarge,
-          )
-        } else {
-          Icon(
-            imageVector = Icons.Rounded.AutoAwesome,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(modifier = Modifier.width(8.dp))
-          Text(
-            text = stringResource(R.string.generate_track_button),
-            style = MaterialTheme.typography.labelLarge,
-          )
-        }
-      }
-    }
-  }
-}
+// Legacy PromptSynthesizerCard removed in favor of SoundResourcesCard on Studio tab.
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

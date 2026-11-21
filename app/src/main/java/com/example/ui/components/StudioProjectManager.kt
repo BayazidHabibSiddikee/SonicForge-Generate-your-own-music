@@ -8,36 +8,29 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Save
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -49,21 +42,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.audio.AudioEngineState
 import com.example.audio.AudioPlaybackState
 import com.example.audio.PitchShiftDsp
 import com.example.audio.RoomReverbDsp
 import com.example.audio.StepSequencerState
 import com.example.model.GeneratedTrack
 import com.example.model.StudioProject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+private sealed interface RenameTarget {
+  data class AudioFile(val track: GeneratedTrack) : RenameTarget
+  data class StudioSession(val project: StudioProject) : RenameTarget
+}
+
 /**
- * Room-backed Studio Project Management card allowing users to save the complete studio state
- * (active audio clips, pitch/reverb/EQ/crossfade/envelope effects, and step sequencer pattern)
- * and reload or delete saved sessions.
+ * Room-backed Studio Project Management view allowing users to browse, select, preview,
+ * rename, and delete saved recorded audio files as well as full studio session snapshots.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -82,10 +81,52 @@ fun StudioProjectsCard(
   onDeleteProject: (String) -> Unit,
   onDismissStatus: () -> Unit,
   modifier: Modifier = Modifier,
+  clipAudioState: AudioEngineState = AudioEngineState(),
+  onSelectAudioFile: (GeneratedTrack) -> Unit = {},
+  onToggleAuditionAudioFile: (GeneratedTrack) -> Unit = {},
+  onRenameAudioFile: (trackId: String, newTitle: String) -> Unit = { _, _ -> },
+  onDeleteAudioFile: (trackId: String) -> Unit = {},
+  onRenameProject: (projectId: String, newName: String) -> Unit = { _, _ -> },
 ) {
   val colorScheme = MaterialTheme.colorScheme
   val activeProject = remember(projects, activeProjectId) {
     projects.firstOrNull { it.id == activeProjectId }
+  }
+
+  var renameTarget by remember { mutableStateOf<RenameTarget?>(null) }
+  var pendingDeleteAudioTrack by remember { mutableStateOf<GeneratedTrack?>(null) }
+
+  renameTarget?.let { target ->
+    val (initialName, fileExt) = when (target) {
+      is RenameTarget.AudioFile -> {
+        val ext = File(target.track.filePath).extension.ifBlank { "wav" }
+        target.track.title to ext
+      }
+      is RenameTarget.StudioSession -> target.project.name to null
+    }
+    RenameProjectDialog(
+      initialName = initialName,
+      fileExtension = fileExt,
+      onDismiss = { renameTarget = null },
+      onConfirmRename = { updatedName ->
+        when (target) {
+          is RenameTarget.AudioFile -> onRenameAudioFile(target.track.id, updatedName)
+          is RenameTarget.StudioSession -> onRenameProject(target.project.id, updatedName)
+        }
+        renameTarget = null
+      },
+    )
+  }
+
+  pendingDeleteAudioTrack?.let { trackToDelete ->
+    DeleteAudioProjectConfirmDialog(
+      track = trackToDelete,
+      onDismiss = { pendingDeleteAudioTrack = null },
+      onConfirmDelete = {
+        onDeleteAudioFile(trackToDelete.id)
+        pendingDeleteAudioTrack = null
+      },
+    )
   }
 
   Surface(
@@ -100,7 +141,7 @@ fun StudioProjectsCard(
       modifier = Modifier
         .fillMaxWidth()
         .padding(16.dp),
-      verticalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
       // Header + Save Actions
       Row(
@@ -247,6 +288,19 @@ fun StudioProjectsCard(
         }
       }
 
+      // Saved Audio Files Manager (select, audition, rename, delete)
+      SavedAudioProjectsSection(
+        allTracks = allTracks,
+        currentTrack = currentTrack,
+        clipAudioState = clipAudioState,
+        onSelectAudioFile = onSelectAudioFile,
+        onToggleAuditionAudioFile = onToggleAuditionAudioFile,
+        onRequestRenameAudioFile = { track -> renameTarget = RenameTarget.AudioFile(track) },
+        onRequestDeleteAudioFile = { track -> pendingDeleteAudioTrack = track },
+      )
+
+      HorizontalDivider(color = colorScheme.outlineVariant.copy(alpha = 0.6f))
+
       // Current Session Live Snapshot Summary
       Surface(
         shape = MaterialTheme.shapes.medium,
@@ -323,7 +377,13 @@ fun StudioProjectsCard(
         }
       }
 
-      // Saved Projects List
+      // Saved Studio Sessions List
+      Text(
+        text = stringResource(R.string.projects_sessions_title),
+        style = MaterialTheme.typography.titleSmall,
+        color = colorScheme.onSurface,
+      )
+
       if (projects.isEmpty()) {
         Text(
           text = stringResource(R.string.projects_empty_hint),
@@ -338,6 +398,7 @@ fun StudioProjectsCard(
               project = project,
               isActive = project.id == activeProjectId,
               onLoad = { onLoadProject(project.id) },
+              onRename = { renameTarget = RenameTarget.StudioSession(project) },
               onDelete = { onDeleteProject(project.id) },
             )
           }
@@ -353,6 +414,7 @@ private fun SavedProjectItemRow(
   project: StudioProject,
   isActive: Boolean,
   onLoad: () -> Unit,
+  onRename: () -> Unit,
   onDelete: () -> Unit,
 ) {
   val colorScheme = MaterialTheme.colorScheme
@@ -423,6 +485,19 @@ private fun SavedProjectItemRow(
             )
           }
           IconButton(
+            onClick = onRename,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("project_rename_button_${project.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Edit,
+              contentDescription = stringResource(R.string.cd_rename_studio_session),
+              tint = colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(18.dp),
+            )
+          }
+          IconButton(
             onClick = onDelete,
             modifier = Modifier
               .minimumInteractiveComponentSize()
@@ -477,158 +552,4 @@ private fun ProjectMetaPill(text: String) {
       modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
     )
   }
-}
-
-@Composable
-fun SaveStudioProjectDialog(
-  defaultName: String,
-  defaultNotes: String,
-  availableTracks: List<GeneratedTrack>,
-  defaultSelectedClipIds: Set<String>,
-  isSaving: Boolean,
-  onDismiss: () -> Unit,
-  onConfirmSave: (name: String, notes: String, selectedClipIds: List<String>) -> Unit,
-) {
-  val colorScheme = MaterialTheme.colorScheme
-  var name by remember { mutableStateOf(defaultName) }
-  var notes by remember { mutableStateOf(defaultNotes) }
-  val selectedIds = remember {
-    mutableStateListOf<String>().apply {
-      addAll(defaultSelectedClipIds.filter { id -> availableTracks.any { it.id == id } })
-    }
-  }
-
-  AlertDialog(
-    onDismissRequest = { if (!isSaving) onDismiss() },
-    modifier = Modifier.testTag("save_project_dialog"),
-    title = {
-      Text(
-        text = stringResource(R.string.save_project_dialog_title),
-        style = MaterialTheme.typography.titleLarge,
-      )
-    },
-    text = {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(max = 380.dp)
-          .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        OutlinedTextField(
-          value = name,
-          onValueChange = { name = it },
-          label = { Text(stringResource(R.string.save_project_name_label)) },
-          placeholder = { Text(stringResource(R.string.save_project_name_placeholder)) },
-          singleLine = true,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("project_name_input"),
-        )
-
-        OutlinedTextField(
-          value = notes,
-          onValueChange = { notes = it },
-          label = { Text(stringResource(R.string.save_project_notes_label)) },
-          maxLines = 2,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("project_notes_input"),
-        )
-
-        Text(
-          text = stringResource(R.string.save_project_includes_fx),
-          style = MaterialTheme.typography.labelSmall,
-          color = colorScheme.secondary,
-        )
-
-        Text(
-          text = stringResource(R.string.save_project_clips_label, selectedIds.size),
-          style = MaterialTheme.typography.labelMedium,
-          color = colorScheme.onSurfaceVariant,
-        )
-
-        if (availableTracks.isNotEmpty()) {
-          Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-          ) {
-            availableTracks.forEach { track ->
-              val checked = track.id in selectedIds
-              Surface(
-                onClick = {
-                  if (checked) selectedIds.remove(track.id) else selectedIds.add(track.id)
-                },
-                shape = MaterialTheme.shapes.small,
-                color = if (checked) colorScheme.primaryContainer.copy(alpha = 0.35f) else colorScheme.surfaceContainerLow,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .minimumInteractiveComponentSize()
-                  .testTag("project_clip_select_${track.id}"),
-              ) {
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                  Checkbox(
-                    checked = checked,
-                    onCheckedChange = null,
-                  )
-                  Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                      text = track.title,
-                      style = MaterialTheme.typography.bodySmall,
-                      color = colorScheme.onSurface,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                      text = "${track.bpm} BPM · ${formatDurationMs(track.durationMs)}",
-                      style = MaterialTheme.typography.labelSmall,
-                      color = colorScheme.onSurfaceVariant,
-                    )
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    confirmButton = {
-      Button(
-        onClick = { onConfirmSave(name, notes, selectedIds.toList()) },
-        enabled = !isSaving && name.isNotBlank(),
-        modifier = Modifier
-          .minimumInteractiveComponentSize()
-          .testTag("confirm_save_project_button"),
-      ) {
-        if (isSaving) {
-          CircularProgressIndicator(
-            modifier = Modifier.size(16.dp),
-            strokeWidth = 2.dp,
-            color = colorScheme.onPrimary,
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Text(stringResource(R.string.save_project_saving_button))
-        } else {
-          Text(stringResource(R.string.save_project_confirm_button))
-        }
-      }
-    },
-    dismissButton = {
-      TextButton(
-        onClick = onDismiss,
-        enabled = !isSaving,
-        modifier = Modifier
-          .minimumInteractiveComponentSize()
-          .testTag("cancel_save_project_button"),
-      ) {
-        Text(stringResource(R.string.edit_org_cancel_button))
-      }
-    },
-  )
 }

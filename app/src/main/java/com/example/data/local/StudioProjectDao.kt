@@ -30,6 +30,9 @@ interface StudioProjectDao {
   @Query("DELETE FROM project_clips WHERE projectId = :projectId")
   suspend fun clearProjectClips(projectId: String)
 
+  @Query("UPDATE studio_projects SET name = :name, updatedAtEpochMs = :updatedAtEpochMs WHERE id = :projectId")
+  suspend fun renameProject(projectId: String, name: String, updatedAtEpochMs: Long)
+
   @Query("DELETE FROM studio_projects WHERE id = :projectId")
   suspend fun deleteProjectById(projectId: String)
 

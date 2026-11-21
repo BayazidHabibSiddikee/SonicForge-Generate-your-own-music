@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.min
@@ -95,6 +96,7 @@ enum class SequencerPreset(
 
 data class StepSequencerState(
   val pattern: Map<SequencerLane, List<Boolean>> = SequencerPreset.FOUR_ON_FLOOR.buildGrid(),
+  val drumKit: DrumKitPreset = DrumKitPreset.STUDIO_ACOUSTIC,
   val bpm: Int = 112,
   val isBpmSynced: Boolean = true,
   val detectedAppBpm: Int = 0,
@@ -156,50 +158,52 @@ object StepSequencerDsp {
   }
 
   /**
-   * Synthesizes a single polyphonic mono voice buffer for [lane] triggered at [stepIndex].
+   * Synthesizes a single polyphonic mono voice buffer for [lane] triggered at [stepIndex]
+   * using tuning parameters from [kit].
    */
   fun synthesizeLaneHitSamples(
     lane: SequencerLane,
     stepIndex: Int,
     sampleRate: Int = DEFAULT_SAMPLE_RATE,
+    kit: DrumKitPreset = DrumKitPreset.STUDIO_ACOUSTIC,
   ): FloatArray {
     val safeRate = sampleRate.coerceAtLeast(8_000)
     return when (lane) {
       SequencerLane.KICK -> {
-        val len = (0.24 * safeRate).toInt()
+        val len = (0.28 * safeRate).toInt()
         FloatArray(len).also { out ->
           var phase = 0.0
           for (i in 0 until len) {
             val t = i.toDouble() / safeRate
-            val freq = 46.0 + 128.0 * exp(-t * 30.0)
+            val freq = kit.kickSubHz + 128.0 * exp(-t * 32.0)
             phase += 2.0 * PI * freq / safeRate
-            val env = exp(-t * 12.5) * (1.0 - exp(-t * 360.0))
-            out[i] = (sin(phase) * env * 0.78).toFloat()
+            val env = exp(-t * kit.kickDecay) * (1.0 - exp(-t * 360.0))
+            out[i] = (tanh(sin(phase) * env * kit.drive) * 0.78).toFloat()
           }
         }
       }
       SequencerLane.SNARE -> {
-        val len = (0.18 * safeRate).toInt()
-        val rng = Random(701 + stepIndex * 17)
+        val len = (0.20 * safeRate).toInt()
+        val rng = Random(701 + stepIndex * 17 + kit.ordinal * 29)
         FloatArray(len).also { out ->
           var bodyPhase = 0.0
           var prevNoise = 0.0
           for (i in 0 until len) {
             val t = i.toDouble() / safeRate
-            bodyPhase += 2.0 * PI * 188.0 / safeRate
+            bodyPhase += 2.0 * PI * kit.snareToneHz / safeRate
             val white = rng.nextDouble() * 2.0 - 1.0
-            val hpNoise = white - 0.55 * prevNoise
+            val hpNoise = white - 0.52 * prevNoise
             prevNoise = white
-            val noise = hpNoise * exp(-t * 19.0)
-            val body = sin(bodyPhase) * exp(-t * 25.0)
+            val noise = hpNoise * exp(-t * 18.0) * kit.snareCrispness
+            val body = sin(bodyPhase) * exp(-t * 24.0)
             val attack = 1.0 - exp(-t * 420.0)
-            out[i] = ((noise * 0.34 + body * 0.24) * attack).toFloat()
+            out[i] = (tanh((noise * 0.34 + body * 0.25) * attack * kit.drive)).toFloat()
           }
         }
       }
       SequencerLane.CH_HAT -> {
-        val len = (0.055 * safeRate).toInt()
-        val rng = Random(1307 + stepIndex * 31)
+        val len = (0.065 * safeRate).toInt()
+        val rng = Random(1307 + stepIndex * 31 + kit.ordinal * 41)
         FloatArray(len).also { out ->
           var prev = 0.0
           for (i in 0 until len) {
@@ -207,14 +211,14 @@ object StepSequencerDsp {
             val white = rng.nextDouble() * 2.0 - 1.0
             val hp = white - prev
             prev = white
-            val env = exp(-t * 72.0) * (1.0 - exp(-t * 600.0))
-            out[i] = (hp * env * 0.24).toFloat()
+            val env = exp(-t * 68.0) * (1.0 - exp(-t * 600.0)) * kit.hatBrightness
+            out[i] = (hp * env * 0.26).toFloat()
           }
         }
       }
       SequencerLane.OH_HAT -> {
-        val len = (0.24 * safeRate).toInt()
-        val rng = Random(2903 + stepIndex * 43)
+        val len = (0.26 * safeRate).toInt()
+        val rng = Random(2903 + stepIndex * 43 + kit.ordinal * 53)
         FloatArray(len).also { out ->
           var prev1 = 0.0
           var prev2 = 0.0
@@ -225,8 +229,8 @@ object StepSequencerDsp {
             prev2 = prev1
             prev1 = white
             val shimmer = 0.75 + 0.25 * sin(2.0 * PI * 320.0 * t)
-            val env = exp(-t * 14.0) * (1.0 - exp(-t * 320.0))
-            out[i] = (hp * shimmer * env * 0.22).toFloat()
+            val env = exp(-t * 13.5) * (1.0 - exp(-t * 320.0)) * kit.hatBrightness
+            out[i] = (hp * shimmer * env * 0.24).toFloat()
           }
         }
       }
@@ -301,7 +305,12 @@ object StepSequencerDsp {
       for (lane in SequencerLane.entries) {
         if (!state.isStepActive(lane, stepInBar)) continue
         val voice = voiceCache.getOrPut(lane to stepInBar) {
-          synthesizeLaneHitSamples(lane, stepInBar, safeRate)
+          synthesizeLaneHitSamples(
+            lane = lane,
+            stepIndex = stepInBar,
+            sampleRate = safeRate,
+            kit = state.drumKit,
+          )
         }
         val limit = min(voice.size, totalSamples - startSample)
         for (i in 0 until limit) {
@@ -359,18 +368,30 @@ class StepSequencerEngine {
   private val _state = MutableStateFlow(StepSequencerState())
   val state: StateFlow<StepSequencerState> = _state.asStateFlow()
 
-  private val voiceCache: Map<Pair<SequencerLane, Int>, FloatArray> by lazy {
-    val map = HashMap<Pair<SequencerLane, Int>, FloatArray>(SequencerLane.entries.size * StepSequencerDsp.STEP_COUNT)
-    for (lane in SequencerLane.entries) {
-      for (step in 0 until StepSequencerDsp.STEP_COUNT) {
-        map[lane to step] = StepSequencerDsp.synthesizeLaneHitSamples(
-          lane = lane,
-          stepIndex = step,
-          sampleRate = StepSequencerDsp.DEFAULT_SAMPLE_RATE,
-        )
+  private val voiceCacheByKit = ConcurrentHashMap<DrumKitPreset, Map<Pair<SequencerLane, Int>, FloatArray>>()
+
+  private fun getKitVoices(kit: DrumKitPreset): Map<Pair<SequencerLane, Int>, FloatArray> {
+    return voiceCacheByKit.getOrPut(kit) {
+      val map = HashMap<Pair<SequencerLane, Int>, FloatArray>(SequencerLane.entries.size * StepSequencerDsp.STEP_COUNT)
+      for (lane in SequencerLane.entries) {
+        for (step in 0 until StepSequencerDsp.STEP_COUNT) {
+          map[lane to step] = StepSequencerDsp.synthesizeLaneHitSamples(
+            lane = lane,
+            stepIndex = step,
+            sampleRate = StepSequencerDsp.DEFAULT_SAMPLE_RATE,
+            kit = kit,
+          )
+        }
       }
+      map
     }
-    map
+  }
+
+  fun selectDrumKit(kit: DrumKitPreset) {
+    _state.update { it.copy(drumKit = kit) }
+    scope.launch(Dispatchers.Default) {
+      getKitVoices(kit)
+    }
   }
 
   fun toggleStep(lane: SequencerLane, stepIndex: Int) {
@@ -580,9 +601,10 @@ class StepSequencerEngine {
               if (framesUntilNextStep <= 0) {
                 val activeStep = stepIndex % StepSequencerDsp.STEP_COUNT
                 _state.update { it.copy(currentStep = activeStep) }
+                val kitCache = getKitVoices(snap.drumKit)
                 for (lane in SequencerLane.entries) {
                   if (snap.isStepActive(lane, activeStep)) {
-                    val voice = voiceCache[lane to activeStep] ?: continue
+                    val voice = kitCache[lane to activeStep] ?: continue
                     val writeLen = min(voice.size, tailBufferSize)
                     for (v in 0 until writeLen) {
                       val pos = (ringCursor + v) % tailBufferSize

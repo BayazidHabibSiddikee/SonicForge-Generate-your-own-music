@@ -369,19 +369,37 @@ class AudioPlayerController private constructor(
     }
   }
 
-  fun togglePlayPause() {
+  fun play() {
     val current = _state.value
+    if (current.isPlaying) return
     if (!current.isPrepared) {
       currentTrack()?.let { loadTrack(it, autoPlay = true) }
       return
     }
 
     if (activeBuffer != null && activeAudioTrack != null) {
-      if (current.isPlaying) {
-        pausePcmStreaming()
-      } else {
-        startPcmStreaming()
-      }
+      startPcmStreaming()
+      return
+    }
+
+    val mp = fallbackMediaPlayer ?: return
+    if (!mp.isPlaying) {
+      val vol = current.effectiveVolume
+      mp.setVolume(vol, vol)
+      applyPitchToFallbackMediaPlayer(mp, current.pitchSemitones)
+      mp.start()
+      _state.update { it.copy(isPlaying = true, errorMessage = null) }
+      startFallbackTicker()
+      PlaybackForegroundService.syncNotification(appContext)
+    }
+  }
+
+  fun pause() {
+    val current = _state.value
+    if (!current.isPrepared || !current.isPlaying) return
+
+    if (activeBuffer != null && activeAudioTrack != null) {
+      pausePcmStreaming()
       return
     }
 
@@ -391,14 +409,14 @@ class AudioPlayerController private constructor(
       stopFallbackTicker()
       _state.update { it.copy(isPlaying = false, positionMs = mp.currentPosition.toLong()) }
       PlaybackForegroundService.syncNotification(appContext)
+    }
+  }
+
+  fun togglePlayPause() {
+    if (_state.value.isPlaying) {
+      pause()
     } else {
-      val vol = current.effectiveVolume
-      mp.setVolume(vol, vol)
-      applyPitchToFallbackMediaPlayer(mp, current.pitchSemitones)
-      mp.start()
-      _state.update { it.copy(isPlaying = true, errorMessage = null) }
-      startFallbackTicker()
-      PlaybackForegroundService.syncNotification(appContext)
+      play()
     }
   }
 

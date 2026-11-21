@@ -123,6 +123,9 @@ fun CustomAudioPlayer(
   canSkipPrevious: Boolean,
   canSkipNext: Boolean,
   onTogglePlayPause: () -> Unit,
+  onPlay: () -> Unit = onTogglePlayPause,
+  onPause: () -> Unit = onTogglePlayPause,
+  onStop: () -> Unit = {},
   onBeginSeek: () -> Unit,
   onPreviewSeek: (Long) -> Unit,
   onCommitSeek: (Long) -> Unit,
@@ -171,12 +174,6 @@ fun CustomAudioPlayer(
   val durationMs = playbackState.durationMs.coerceAtLeast(track?.durationMs ?: 0L).coerceAtLeast(1L)
   val currentPositionMs = playbackState.positionMs.coerceIn(0L, durationMs)
   val progressFraction = (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-
-  val playButtonScale by animateFloatAsState(
-    targetValue = if (playbackState.isPlaying) 1.04f else 1f,
-    animationSpec = spring(dampingRatio = 0.65f, stiffness = 400f),
-    label = "playButtonScale",
-  )
 
   val glowAlpha by animateFloatAsState(
     targetValue = if (playbackState.isPlaying) 0.22f else 0.08f,
@@ -252,6 +249,9 @@ fun CustomAudioPlayer(
               overflow = TextOverflow.Ellipsis,
             )
             Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
               horizontalArrangement = Arrangement.spacedBy(6.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -505,7 +505,18 @@ fun CustomAudioPlayer(
         }
       }
 
-      // 3. Transport Controls Row (Loop, Prev, -5s, Play/Pause, +5s, Next)
+      // 3. Dedicated Playback Control Bar (Play, Pause, Stop)
+      PlaybackControlBar(
+        isPlaying = playbackState.isPlaying,
+        isPreparing = playbackState.isPreparing,
+        hasTrack = hasTrack,
+        positionMs = currentPositionMs,
+        onPlay = onPlay,
+        onPause = onPause,
+        onStop = onStop,
+      )
+
+      // 3b. Secondary Transport Navigation Row (Loop, Prev, -5s, +5s, Next)
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -555,39 +566,6 @@ fun CustomAudioPlayer(
             contentDescription = stringResource(R.string.cd_rewind_5s),
             tint = if (hasTrack && playbackState.isPrepared) colorScheme.onSurface else colorScheme.outline,
           )
-        }
-
-        FilledIconButton(
-          onClick = onTogglePlayPause,
-          enabled = hasTrack && !playbackState.isPreparing,
-          colors = IconButtonDefaults.filledIconButtonColors(
-            containerColor = colorScheme.primary,
-            contentColor = colorScheme.onPrimary,
-            disabledContainerColor = colorScheme.surfaceContainerHigh,
-            disabledContentColor = colorScheme.onSurfaceVariant,
-          ),
-          modifier = Modifier
-            .size(54.dp)
-            .scale(playButtonScale)
-            .testTag("player_play_pause_button"),
-        ) {
-          if (playbackState.isPreparing) {
-            CircularProgressIndicator(
-              modifier = Modifier.size(24.dp),
-              strokeWidth = 2.5.dp,
-              color = colorScheme.onPrimary,
-            )
-          } else {
-            Icon(
-              imageVector = if (playbackState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-              contentDescription = if (playbackState.isPlaying) {
-                stringResource(R.string.cd_pause_track)
-              } else {
-                stringResource(R.string.cd_play_track)
-              },
-              modifier = Modifier.size(32.dp),
-            )
-          }
         }
 
         IconButton(

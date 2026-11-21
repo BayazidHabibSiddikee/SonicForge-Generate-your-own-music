@@ -65,6 +65,20 @@ class StudioProjectRepository(
     projectDao.getProjectWithClipsOnce(projectId)?.toDomain(requireExistingFiles = requireExistingFiles)
   }
 
+  suspend fun renameProject(
+    projectId: String,
+    newName: String,
+  ): StudioProject? = withContext(Dispatchers.IO) {
+    val cleanName = newName.trim()
+    require(cleanName.isNotEmpty()) { "Project name cannot be empty." }
+    projectDao.renameProject(
+      projectId = projectId,
+      name = cleanName,
+      updatedAtEpochMs = System.currentTimeMillis(),
+    )
+    projectDao.getProjectWithClipsOnce(projectId)?.toDomain(requireExistingFiles = true)
+  }
+
   suspend fun deleteProject(projectId: String) = withContext(Dispatchers.IO) {
     projectDao.deleteProjectById(projectId)
   }

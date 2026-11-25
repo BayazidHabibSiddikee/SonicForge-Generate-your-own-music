@@ -61,6 +61,7 @@ import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
@@ -76,6 +77,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -139,6 +142,7 @@ import com.example.data.local.TrackHistoryItem
 import com.example.model.BulkRenameConfig
 import com.example.model.GeneratedTrack
 import com.example.model.Playlist
+import com.example.ui.components.AiProducerAndSamplesCard
 import com.example.ui.components.AudioUrlDownloadDialog
 import com.example.ui.components.BulkRenameDialog
 import com.example.ui.components.BulkSelectionBar
@@ -154,6 +158,7 @@ import com.example.ui.components.SaveStudioProjectDialog
 import com.example.ui.components.SoundResourcesCard
 import com.example.ui.components.StudioProjectsCard
 import com.example.ui.components.TrackExportDialog
+import com.example.ui.components.RoomStorageExportCard
 import com.example.ui.components.TrackHistoryCard
 import com.example.ui.components.TrackPlaylistsDialog
 import com.example.ui.components.TrackTrimDialog
@@ -349,6 +354,8 @@ fun SonicForgeScreen(
   onReuseHistoryPrompt: (String) -> Unit = {},
   onDeleteHistoryEntry: (String) -> Unit = {},
   onClearAllHistory: () -> Unit = {},
+  aiProducerActions: AiProducerActions = AiProducerActions(),
+  roomStorageExportActions: RoomStorageExportActions = RoomStorageExportActions(),
 ) {
   val colorScheme = MaterialTheme.colorScheme
   BackHandler(enabled = uiState.activeDestination != StudioDestination.STUDIO) {
@@ -471,7 +478,10 @@ fun SonicForgeScreen(
       contentWindowInsets = WindowInsets.safeDrawing,
       bottomBar = {
         Column(modifier = Modifier.fillMaxWidth()) {
-          if (uiState.showBottomWaveformBar) {
+          val showMiniPlayer = uiState.showBottomWaveformBar &&
+            uiState.activeDestination != StudioDestination.STUDIO &&
+            uiState.currentTrack != null
+          if (showMiniPlayer) {
             BottomWaveformBar(
               track = uiState.currentTrack,
               playbackState = uiState.playback,
@@ -585,6 +595,8 @@ fun SonicForgeScreen(
                 onReuseHistoryPrompt = onReuseHistoryPrompt,
                 onDeleteHistoryEntry = onDeleteHistoryEntry,
                 onClearAllHistory = onClearAllHistory,
+                aiProducerActions = aiProducerActions,
+                roomStorageExportActions = roomStorageExportActions,
                 onGenerateSoundResource = onGenerateSoundResource,
                 onPromptChanged = onPromptChanged,
                 onGenerateTrack = onGenerateTrack,
@@ -822,6 +834,8 @@ fun SonicForgeScreen(
                   onReuseHistoryPrompt = onReuseHistoryPrompt,
                   onDeleteHistoryEntry = onDeleteHistoryEntry,
                   onClearAllHistory = onClearAllHistory,
+                  aiProducerActions = aiProducerActions,
+                  roomStorageExportActions = roomStorageExportActions,
                   onGenerateSoundResource = onGenerateSoundResource,
                   onPromptChanged = onPromptChanged,
                   onGenerateTrack = onGenerateTrack,
@@ -1141,10 +1155,10 @@ private fun StudioSectionTabRow(
 ) {
   val colorScheme = MaterialTheme.colorScheme
   val tabs = listOf(
-    StudioSectionTab.RESOURCES to stringResource(R.string.studio_tab_resources),
-    StudioSectionTab.HISTORY to "${stringResource(R.string.studio_tab_history)} ($historyCount)",
-    StudioSectionTab.LIBRARY to "${stringResource(R.string.studio_tab_library)} ($trackCount)",
-    StudioSectionTab.PROJECTS to "${stringResource(R.string.studio_tab_projects)} ($projectCount)",
+    StudioSectionTab.HISTORY to stringResource(R.string.studio_tab_history),
+    StudioSectionTab.LIBRARY to stringResource(R.string.studio_tab_library),
+    StudioSectionTab.RESOURCES to stringResource(R.string.studio_tab_ai_packs),
+    StudioSectionTab.PROJECTS to stringResource(R.string.studio_tab_projects),
   )
 
   SingleChoiceSegmentedButtonRow(
@@ -1186,6 +1200,8 @@ private fun LazyListScope.studioTabContentItems(
   onReuseHistoryPrompt: (String) -> Unit,
   onDeleteHistoryEntry: (String) -> Unit,
   onClearAllHistory: () -> Unit,
+  aiProducerActions: AiProducerActions,
+  roomStorageExportActions: RoomStorageExportActions,
   onGenerateSoundResource: (StudioSoundResource) -> Unit,
   onPromptChanged: (String) -> Unit,
   onGenerateTrack: () -> Unit,
@@ -1224,6 +1240,16 @@ private fun LazyListScope.studioTabContentItems(
   when (uiState.studioSectionTab) {
     StudioSectionTab.HISTORY -> {
       item {
+        RoomStorageExportCard(
+          state = uiState.roomStorageExport,
+          roomTrackCount = uiState.allTracks.size,
+          onSelectFormat = roomStorageExportActions.onSelectFormat,
+          onExportToDeviceMusic = roomStorageExportActions.onExportAllToDeviceMusic,
+          onChooseStorageDirectory = roomStorageExportActions.onChooseStorageDirectoryForAll,
+          onDismissStatus = roomStorageExportActions.onDismissStatus,
+        )
+      }
+      item {
         TrackHistoryCard(
           historyItems = uiState.trackHistory,
           totalHistoryCount = uiState.totalHistoryCount,
@@ -1237,11 +1263,28 @@ private fun LazyListScope.studioTabContentItems(
           onReusePrompt = onReuseHistoryPrompt,
           onDeleteHistoryItem = onDeleteHistoryEntry,
           onClearAllHistory = onClearAllHistory,
+          onExportHistoryItem = roomStorageExportActions.onExportHistoryItemToStorage,
         )
       }
     }
 
     StudioSectionTab.RESOURCES -> {
+      item {
+        AiProducerAndSamplesCard(
+          aiState = uiState.aiProducer,
+          offlineMusicState = uiState.offlineMusicState,
+          onSelectAiEngine = aiProducerActions.onSelectAiEngine,
+          onAiPromptChanged = aiProducerActions.onAiPromptChanged,
+          onArrangeTrack = aiProducerActions.onArrangeTrack,
+          onRenderAiFullMix = aiProducerActions.onRenderAiFullMix,
+          onApplyPlanToInstruments = aiProducerActions.onApplyPlanToInstruments,
+          onDetachSampleFromAiMix = aiProducerActions.onDetachSampleFromAiMix,
+          onOfflineQueryChanged = aiProducerActions.onOfflineQueryChanged,
+          onSelectOfflineCategory = aiProducerActions.onSelectOfflineCategory,
+          onPreviewOfflineAsset = aiProducerActions.onPreviewOfflineAsset,
+          onImportOfflineAsset = aiProducerActions.onImportOfflineAsset,
+        )
+      }
       item {
         SoundResourcesCard(
           generatingResourceId = uiState.generatingResourceId,
@@ -1253,12 +1296,14 @@ private fun LazyListScope.studioTabContentItems(
           onGenerateCustomPrompt = onGenerateTrack,
         )
       }
-      item {
-        BackgroundPermissionsCard(
-          notificationPermission = uiState.notificationPermission,
-          onRequestNotificationPermission = onRequestNotificationPermission,
-          onOpenNotificationSettings = onOpenNotificationSettings,
-        )
+      if (uiState.notificationPermission != NotificationPermissionStatus.GRANTED) {
+        item {
+          BackgroundPermissionsCard(
+            notificationPermission = uiState.notificationPermission,
+            onRequestNotificationPermission = onRequestNotificationPermission,
+            onOpenNotificationSettings = onOpenNotificationSettings,
+          )
+        }
       }
     }
 
@@ -1300,6 +1345,28 @@ private fun LazyListScope.studioTabContentItems(
           onDownloadUrlClick = onOpenUrlDownloadDialog,
           onImportAudioClick = onImportAudioClick,
         )
+      }
+      if (uiState.allTracks.isNotEmpty()) {
+        item {
+          val selectedCount = if (uiState.isSelectionMode) uiState.selectedTrackIds.size else 0
+          RoomStorageExportCard(
+            state = uiState.roomStorageExport,
+            roomTrackCount = uiState.allTracks.size,
+            selectedTrackCount = selectedCount,
+            onSelectFormat = roomStorageExportActions.onSelectFormat,
+            onExportToDeviceMusic = if (selectedCount > 0) {
+              roomStorageExportActions.onExportSelectedToDeviceMusic
+            } else {
+              roomStorageExportActions.onExportAllToDeviceMusic
+            },
+            onChooseStorageDirectory = if (selectedCount > 0) {
+              roomStorageExportActions.onChooseStorageDirectoryForSelected
+            } else {
+              roomStorageExportActions.onChooseStorageDirectoryForAll
+            },
+            onDismissStatus = roomStorageExportActions.onDismissStatus,
+          )
+        }
       }
       item {
         PlaylistsShelfSection(
@@ -1741,101 +1808,96 @@ private fun StudioHeader(
   onRestoreBottomWaveform: () -> Unit = {},
 ) {
   val colorScheme = MaterialTheme.colorScheme
-  Column(
-    modifier = Modifier.fillMaxWidth(),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
+  val nextThemeMode = when (themeMode) {
+    ThemeMode.DARK -> ThemeMode.LIGHT
+    ThemeMode.LIGHT -> ThemeMode.SYSTEM
+    ThemeMode.SYSTEM -> ThemeMode.DARK
+  }
+  val themeIcon = when (themeMode) {
+    ThemeMode.LIGHT -> Icons.Rounded.LightMode
+    ThemeMode.DARK -> Icons.Rounded.DarkMode
+    ThemeMode.SYSTEM -> Icons.Rounded.BrightnessAuto
+  }
+
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = 2.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.SpaceBetween,
   ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween,
+    Column(
+      modifier = Modifier.weight(1f),
+      verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
-      Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-      ) {
-        Text(
-          text = stringResource(R.string.studio_subtitle),
-          style = MaterialTheme.typography.labelSmall,
-          color = colorScheme.secondary,
-        )
-        Text(
-          text = stringResource(R.string.app_name),
-          style = MaterialTheme.typography.headlineLarge,
-          color = colorScheme.onBackground,
-        )
-      }
-
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
-      ) {
-        if (showRestoreWaveformButton) {
-          OutlinedButton(
-            onClick = onRestoreBottomWaveform,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-            border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.55f)),
-            modifier = Modifier
-              .minimumInteractiveComponentSize()
-              .testTag("restore_bottom_waveform_button"),
-          ) {
-            Icon(
-              imageVector = Icons.Rounded.GraphicEq,
-              contentDescription = stringResource(R.string.cd_restore_bottom_waveform),
-              tint = colorScheme.primary,
-              modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-              text = stringResource(R.string.restore_bottom_waveform_label),
-              style = MaterialTheme.typography.labelSmall,
-              color = colorScheme.primary,
-              maxLines = 1,
-            )
-          }
-        }
-
-        if (currentTrack != null) {
-          OutlinedButton(
-            onClick = { onQuickSaveCurrentMp3(currentTrack) },
-            enabled = !isQuickSavingMp3,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-            border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.6f)),
-            modifier = Modifier
-              .minimumInteractiveComponentSize()
-              .testTag("quick_save_mp3_button"),
-          ) {
-            if (isQuickSavingMp3) {
-              CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-            } else {
-              Icon(
-                imageVector = Icons.Rounded.SaveAlt,
-                contentDescription = stringResource(R.string.cd_export_mp3),
-                tint = colorScheme.primary,
-                modifier = Modifier.size(16.dp),
-              )
-            }
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-              text = if (isQuickSavingMp3) {
-                stringResource(R.string.saving_mp3_quick_label)
-              } else {
-                stringResource(R.string.save_mp3_quick_button)
-              },
-              style = MaterialTheme.typography.labelSmall,
-              color = colorScheme.primary,
-              maxLines = 1,
-            )
-          }
-        }
-      }
+      Text(
+        text = stringResource(R.string.app_name),
+        style = MaterialTheme.typography.headlineMedium,
+        color = colorScheme.onBackground,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+      Text(
+        text = stringResource(R.string.studio_subtitle),
+        style = MaterialTheme.typography.labelSmall,
+        color = colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
     }
 
-    ThemeSelectorRow(
-      selectedMode = themeMode,
-      onSelectThemeMode = onSelectThemeMode,
-    )
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      if (showRestoreWaveformButton) {
+        IconButton(
+          onClick = onRestoreBottomWaveform,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .testTag("restore_bottom_waveform_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.GraphicEq,
+            contentDescription = stringResource(R.string.cd_restore_bottom_waveform),
+            tint = colorScheme.primary,
+          )
+        }
+      }
+
+      if (currentTrack != null) {
+        IconButton(
+          onClick = { onQuickSaveCurrentMp3(currentTrack) },
+          enabled = !isQuickSavingMp3,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .testTag("quick_save_mp3_button"),
+        ) {
+          if (isQuickSavingMp3) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+          } else {
+            Icon(
+              imageVector = Icons.Rounded.SaveAlt,
+              contentDescription = stringResource(R.string.cd_export_mp3),
+              tint = colorScheme.primary,
+            )
+          }
+        }
+      }
+
+      IconButton(
+        onClick = { onSelectThemeMode(nextThemeMode) },
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("theme_cycle_button"),
+      ) {
+        Icon(
+          imageVector = themeIcon,
+          contentDescription = stringResource(R.string.cd_cycle_theme_mode),
+          tint = colorScheme.onSurfaceVariant,
+        )
+      }
+    }
   }
 }
 
@@ -2510,90 +2572,101 @@ internal fun GeneratedTrackRow(
       }
 
       if (!isSelectionMode) {
+        var menuExpanded by remember(track.id) { mutableStateOf(false) }
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.End,
           verticalAlignment = Alignment.CenterVertically,
         ) {
-        IconButton(
-          onClick = onToggleFavorite,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("favorite_track_${track.id}"),
-        ) {
-          Icon(
-            imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-            contentDescription = stringResource(
-              if (track.isFavorite) R.string.cd_remove_favorite else R.string.cd_add_favorite,
-            ),
-            tint = if (track.isFavorite) colorScheme.tertiary else colorScheme.onSurfaceVariant,
-          )
-        }
+          IconButton(
+            onClick = onToggleFavorite,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("favorite_track_${track.id}"),
+          ) {
+            Icon(
+              imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+              contentDescription = stringResource(
+                if (track.isFavorite) R.string.cd_remove_favorite else R.string.cd_add_favorite,
+              ),
+              tint = if (track.isFavorite) colorScheme.tertiary else colorScheme.onSurfaceVariant,
+            )
+          }
 
-        IconButton(
-          onClick = onAddToPlaylist,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("add_to_playlist_${track.id}"),
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
-            contentDescription = stringResource(R.string.cd_add_to_playlist),
-            tint = colorScheme.onSurfaceVariant,
-          )
-        }
+          IconButton(
+            onClick = onExportMp3,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("export_mp3_${track.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Share,
+              contentDescription = stringResource(R.string.cd_export_mp3),
+              tint = colorScheme.secondary,
+            )
+          }
 
-        IconButton(
-          onClick = onTrimTrack,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("trim_track_${track.id}"),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.ContentCut,
-            contentDescription = stringResource(R.string.cd_trim_track),
-            tint = colorScheme.primary,
-          )
-        }
-
-        IconButton(
-          onClick = onExportMp3,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("export_mp3_${track.id}"),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.Share,
-            contentDescription = stringResource(R.string.cd_export_mp3),
-            tint = colorScheme.secondary,
-          )
-        }
-
-        IconButton(
-          onClick = onEditOrganization,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("edit_tags_${track.id}"),
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Rounded.Label,
-            contentDescription = stringResource(R.string.cd_edit_tags),
-            tint = colorScheme.onSurfaceVariant,
-          )
-        }
-
-        IconButton(
-          onClick = onDelete,
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("delete_track_${track.id}"),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.DeleteOutline,
-            contentDescription = stringResource(R.string.cd_delete_track),
-            tint = colorScheme.onSurfaceVariant,
-          )
-        }
+          Box {
+            IconButton(
+              onClick = { menuExpanded = true },
+              modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("more_actions_${track.id}"),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.MoreVert,
+                contentDescription = stringResource(R.string.cd_more_track_actions),
+                tint = colorScheme.onSurfaceVariant,
+              )
+            }
+            DropdownMenu(
+              expanded = menuExpanded,
+              onDismissRequest = { menuExpanded = false },
+            ) {
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.track_menu_add_playlist)) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },
+                onClick = {
+                  menuExpanded = false
+                  onAddToPlaylist()
+                },
+                modifier = Modifier.testTag("add_to_playlist_${track.id}"),
+              )
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.track_menu_trim)) },
+                leadingIcon = { Icon(Icons.Rounded.ContentCut, contentDescription = null) },
+                onClick = {
+                  menuExpanded = false
+                  onTrimTrack()
+                },
+                modifier = Modifier.testTag("trim_track_${track.id}"),
+              )
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.track_menu_edit_tags)) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
+                onClick = {
+                  menuExpanded = false
+                  onEditOrganization()
+                },
+                modifier = Modifier.testTag("edit_tags_${track.id}"),
+              )
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.track_menu_delete), color = colorScheme.error) },
+                leadingIcon = {
+                  Icon(
+                    Icons.Rounded.DeleteOutline,
+                    contentDescription = null,
+                    tint = colorScheme.error,
+                  )
+                },
+                onClick = {
+                  menuExpanded = false
+                  onDelete()
+                },
+                modifier = Modifier.testTag("delete_track_${track.id}"),
+              )
+            }
+          }
         }
       }
     }

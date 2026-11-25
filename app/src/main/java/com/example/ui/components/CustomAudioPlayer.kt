@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -13,6 +14,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +37,8 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Forward5
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -62,6 +66,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -71,6 +78,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -173,10 +184,11 @@ fun CustomAudioPlayer(
   val hasTrack = track != null
   val durationMs = playbackState.durationMs.coerceAtLeast(track?.durationMs ?: 0L).coerceAtLeast(1L)
   val currentPositionMs = playbackState.positionMs.coerceIn(0L, durationMs)
-  val progressFraction = (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+  var showFxDrawer by remember { mutableStateOf(false) }
+  var selectedFxTab by remember { mutableIntStateOf(0) } // 0=Tone&EQ, 1=Reverb, 2=Master, 3=Visuals
 
   val glowAlpha by animateFloatAsState(
-    targetValue = if (playbackState.isPlaying) 0.22f else 0.08f,
+    targetValue = if (playbackState.isPlaying) 0.16f else 0.05f,
     animationSpec = tween(durationMillis = 350),
     label = "ambientGlow",
   )
@@ -241,53 +253,27 @@ fun CustomAudioPlayer(
           )
 
           if (track != null) {
+            val hasLiveBpm = playbackState.liveBpm in 55..180
+            val displayBpm = when {
+              hasLiveBpm -> playbackState.liveBpm
+              bufferDiagnostics?.detectedBpm in 55..180 -> bufferDiagnostics!!.detectedBpm
+              else -> track.bpm
+            }
+            val displayKey = PitchShiftDsp.transposeKeyLabel(track.musicalKey, playbackState.pitchSemitones)
             Text(
-              text = "\"${track.prompt}\"",
-              style = MaterialTheme.typography.bodyMedium,
+              text = "${track.genre} · $displayBpm BPM · $displayKey",
+              style = MaterialTheme.typography.bodySmall,
               color = colorScheme.onSurfaceVariant,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.testTag("player_key_pill"),
             )
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-              horizontalArrangement = Arrangement.spacedBy(6.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              val hasLiveBpm = playbackState.liveBpm in 55..180
-              val displayBpm = when {
-                hasLiveBpm -> playbackState.liveBpm
-                bufferDiagnostics?.detectedBpm in 55..180 -> bufferDiagnostics!!.detectedBpm
-                else -> track.bpm
-              }
-              val bpmLabel = when {
-                hasLiveBpm && playbackState.isPlaying ->
-                  stringResource(R.string.bpm_live_badge, displayBpm)
-                playbackState.isBpmAnalyzing && playbackState.isPlaying ->
-                  stringResource(R.string.bpm_live_analyzing)
-                else -> stringResource(R.string.bpm_live_badge_plain, displayBpm)
-              }
-              val displayKey = PitchShiftDsp.transposeKeyLabel(track.musicalKey, playbackState.pitchSemitones)
-              MetadataPill(text = track.genre, accentColor = colorScheme.primary)
-              LiveBpmPill(
-                text = bpmLabel,
-                beatPulse = if (playbackState.isPlaying) playbackState.liveBeatPulse else 0f,
-                isLiveActive = playbackState.isPlaying && (hasLiveBpm || playbackState.isBpmAnalyzing),
-                accentColor = colorScheme.secondary,
-              )
-              MetadataPill(
-                text = displayKey,
-                accentColor = colorScheme.tertiary,
-                modifier = Modifier.testTag("player_key_pill"),
-              )
-            }
           } else {
             Text(
               text = stringResource(R.string.empty_tracks_subtitle),
-              style = MaterialTheme.typography.bodyMedium,
+              style = MaterialTheme.typography.bodySmall,
               color = colorScheme.onSurfaceVariant,
-              maxLines = 2,
+              maxLines = 1,
               overflow = TextOverflow.Ellipsis,
             )
           }
@@ -323,94 +309,40 @@ fun CustomAudioPlayer(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
       ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          val modeItems = listOf(
-            Triple(WaveformInteractionMode.SCRUB, stringResource(R.string.waveform_mode_scrub), Icons.Rounded.GraphicEq),
-            Triple(WaveformInteractionMode.ENVELOPE, stringResource(R.string.waveform_mode_envelope), Icons.Rounded.ShowChart),
-            Triple(WaveformInteractionMode.MUTE, stringResource(R.string.waveform_mode_mute), Icons.AutoMirrored.Rounded.VolumeOff),
-          )
-          modeItems.forEach { (mode, label, icon) ->
-            val selected = interactionMode == mode
-            val tag = when (mode) {
-              WaveformInteractionMode.SCRUB -> "waveform_mode_scrub"
-              WaveformInteractionMode.ENVELOPE -> "waveform_mode_envelope"
-              WaveformInteractionMode.MUTE -> "waveform_mode_mute"
-            }
-            FilterChip(
-              selected = selected,
-              enabled = hasTrack,
-              onClick = { onSelectInteractionMode(mode) },
-              leadingIcon = {
-                Icon(
-                  imageVector = icon,
-                  contentDescription = null,
-                  modifier = Modifier.size(14.dp),
-                )
+        if (hasTrack && interactionMode != WaveformInteractionMode.SCRUB) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              text = when (interactionMode) {
+                WaveformInteractionMode.ENVELOPE -> stringResource(R.string.waveform_hint_envelope)
+                WaveformInteractionMode.MUTE -> stringResource(R.string.waveform_hint_mute)
+                WaveformInteractionMode.SCRUB -> stringResource(R.string.waveform_hint_scrub)
               },
-              label = {
+              style = MaterialTheme.typography.labelSmall,
+              color = when (interactionMode) {
+                WaveformInteractionMode.ENVELOPE -> colorScheme.tertiary
+                WaveformInteractionMode.MUTE -> colorScheme.error
+                WaveformInteractionMode.SCRUB -> colorScheme.onSurfaceVariant
+              },
+              modifier = Modifier
+                .weight(1f)
+                .testTag("waveform_mode_hint"),
+            )
+            if (activeEnvelope.isEdited) {
+              TextButton(
+                onClick = onResetAudioEnvelope,
+                modifier = Modifier.testTag("waveform_reset_envelope_button"),
+              ) {
                 Text(
-                  text = label,
+                  text = stringResource(R.string.waveform_reset_envelope),
                   style = MaterialTheme.typography.labelSmall,
                 )
-              },
-              colors = FilterChipDefaults.filterChipColors(
-                selectedContainerColor = when (mode) {
-                  WaveformInteractionMode.SCRUB -> colorScheme.primaryContainer
-                  WaveformInteractionMode.ENVELOPE -> colorScheme.tertiaryContainer
-                  WaveformInteractionMode.MUTE -> colorScheme.errorContainer
-                },
-                selectedLabelColor = when (mode) {
-                  WaveformInteractionMode.SCRUB -> colorScheme.onPrimaryContainer
-                  WaveformInteractionMode.ENVELOPE -> colorScheme.onTertiaryContainer
-                  WaveformInteractionMode.MUTE -> colorScheme.onErrorContainer
-                },
-              ),
-              modifier = Modifier
-                .height(30.dp)
-                .testTag(tag),
-            )
-          }
-
-          if (hasTrack && activeEnvelope.isEdited) {
-            TextButton(
-              onClick = onResetAudioEnvelope,
-              modifier = Modifier.testTag("waveform_reset_envelope_button"),
-            ) {
-              Icon(
-                imageVector = Icons.Rounded.RestartAlt,
-                contentDescription = null,
-                modifier = Modifier.size(15.dp),
-              )
-              Spacer(modifier = Modifier.width(3.dp))
-              Text(
-                text = stringResource(R.string.waveform_reset_envelope),
-                style = MaterialTheme.typography.labelSmall,
-              )
+              }
             }
           }
-        }
-
-        if (hasTrack && interactionMode != WaveformInteractionMode.SCRUB) {
-          Text(
-            text = when (interactionMode) {
-              WaveformInteractionMode.ENVELOPE -> stringResource(R.string.waveform_hint_envelope)
-              WaveformInteractionMode.MUTE -> stringResource(R.string.waveform_hint_mute)
-              WaveformInteractionMode.SCRUB -> stringResource(R.string.waveform_hint_scrub)
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = when (interactionMode) {
-              WaveformInteractionMode.ENVELOPE -> colorScheme.tertiary
-              WaveformInteractionMode.MUTE -> colorScheme.error
-              WaveformInteractionMode.SCRUB -> colorScheme.onSurfaceVariant
-            },
-            modifier = Modifier.testTag("waveform_mode_hint"),
-          )
         }
 
         WaveformVisualizer(
@@ -492,17 +424,6 @@ fun CustomAudioPlayer(
           )
         }
 
-        if (track != null && bufferDiagnostics != null && bufferDiagnostics.sampleCount > 0) {
-          FourierSpectrumStrip(
-            diagnostics = bufferDiagnostics,
-            isPlaying = playbackState.isPlaying,
-            liveBpm = playbackState.liveBpm,
-            liveBpmConfidence = playbackState.liveBpmConfidence,
-            liveBeatPulse = playbackState.liveBeatPulse,
-            isBpmAnalyzing = playbackState.isBpmAnalyzing,
-            liveSpectrum = playbackState.liveSpectrum,
-          )
-        }
       }
 
       // 3. Dedicated Playback Control Bar (Play, Pause, Stop)
@@ -655,15 +576,113 @@ fun CustomAudioPlayer(
         }
       }
 
-      // 4b. Real-Time 20-Band Frequency Spectrum Analyzer (40 Hz – 16 kHz)
-      FrequencySpectrumAnalyzerCard(
-        liveSpectrum = playbackState.liveSpectrum,
-        bufferDiagnostics = bufferDiagnostics,
-        isPlaying = playbackState.isPlaying,
-        hasTrack = hasTrack,
-      )
+      // 5. Progressive Disclosure: Audio FX & Studio Mixer Drawer (collapsed by default)
+      val activeFxSummary = buildList {
+        if (abs(playbackState.pitchSemitones) >= 0.05f) {
+          add(PitchShiftDsp.formatSemitoneBadge(playbackState.pitchSemitones))
+        }
+        if (playbackState.equalizer.isActive) add("EQ")
+        if (playbackState.reverb.isActive) add(playbackState.reverb.preset.label)
+        if (playbackState.crossfade.isActive) add("Crossfade")
+      }
 
-      // 5. Real-Time Pitch Shifting & Musical Key Transpose DSP Section
+      Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = if (activeFxSummary.isNotEmpty() || showFxDrawer) {
+          colorScheme.surfaceContainerHigh
+        } else {
+          colorScheme.surfaceContainerLow
+        },
+        border = BorderStroke(1.dp, colorScheme.outlineVariant),
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(MaterialTheme.shapes.medium)
+          .clickable { showFxDrawer = !showFxDrawer }
+          .testTag("player_fx_drawer_toggle"),
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Tune,
+              contentDescription = null,
+              tint = if (activeFxSummary.isNotEmpty()) colorScheme.primary else colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(18.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+              Text(
+                text = stringResource(R.string.player_fx_drawer_title),
+                style = MaterialTheme.typography.labelLarge,
+                color = colorScheme.onSurface,
+              )
+              Text(
+                text = if (activeFxSummary.isNotEmpty()) {
+                  activeFxSummary.joinToString(" · ")
+                } else {
+                  stringResource(R.string.player_fx_drawer_subtitle)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (activeFxSummary.isNotEmpty()) colorScheme.primary else colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+          Icon(
+            imageVector = if (showFxDrawer) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            tint = colorScheme.onSurfaceVariant,
+          )
+        }
+      }
+
+      AnimatedVisibility(visible = showFxDrawer) {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          val fxTabs = listOf(
+            stringResource(R.string.player_fx_tab_tone),
+            stringResource(R.string.player_fx_tab_space),
+            stringResource(R.string.player_fx_tab_master),
+            stringResource(R.string.player_fx_tab_visuals),
+          )
+          SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("player_fx_tab_row"),
+          ) {
+            fxTabs.forEachIndexed { idx, label ->
+              SegmentedButton(
+                selected = selectedFxTab == idx,
+                onClick = { selectedFxTab = idx },
+                shape = SegmentedButtonDefaults.itemShape(index = idx, count = fxTabs.size),
+                icon = {},
+                label = {
+                  Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                },
+                modifier = Modifier.testTag("player_fx_tab_$idx"),
+              )
+            }
+          }
+
+      if (selectedFxTab == 0) {
+      // 5a. Real-Time Pitch Shifting & Musical Key Transpose DSP Section
       val isPitchActive = abs(playbackState.pitchSemitones) >= 0.05f
       val semitoneBadge = PitchShiftDsp.formatSemitoneBadge(playbackState.pitchSemitones)
       val transposedKeyLabel = track?.let {
@@ -806,7 +825,9 @@ fun CustomAudioPlayer(
           }
         }
       }
+      }
 
+      if (selectedFxTab == 1) {
       // 6. Real-Time Configurable Convolution & Spatial Reverb DSP Section
       val reverb = playbackState.reverb
       val isReverbActive = reverb.isActive
@@ -1207,7 +1228,9 @@ fun CustomAudioPlayer(
           }
         }
       }
+      }
 
+      if (selectedFxTab == 0) {
       // 7. 8-Band Graphic Equalizer DSP Section
       val eq = playbackState.equalizer
       val isEqActive = eq.isActive
@@ -1398,7 +1421,9 @@ fun CustomAudioPlayer(
           }
         }
       }
+      }
 
+      if (selectedFxTab == 2) {
       // 7. ITU-R BS.1770-4 LUFS Post-Processing Gain Normalization DSP Section
       val measuredLufsText = bufferDiagnostics?.let {
         "%.1f LUFS · %.1f dBTP".format(it.integratedLufs, it.truePeakDbfs)
@@ -1767,6 +1792,72 @@ fun CustomAudioPlayer(
               .fillMaxWidth()
               .testTag("player_crossfade_slider"),
           )
+        }
+      }
+      }
+
+      if (selectedFxTab == 3) {
+        // Waveform Edit Modes (Scrub / Envelope / Mute) + Live Analyzers
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          val modeItems = listOf(
+            Triple(WaveformInteractionMode.SCRUB, stringResource(R.string.waveform_mode_scrub), Icons.Rounded.GraphicEq),
+            Triple(WaveformInteractionMode.ENVELOPE, stringResource(R.string.waveform_mode_envelope), Icons.Rounded.ShowChart),
+            Triple(WaveformInteractionMode.MUTE, stringResource(R.string.waveform_mode_mute), Icons.AutoMirrored.Rounded.VolumeOff),
+          )
+          modeItems.forEach { (mode, label, icon) ->
+            val selected = interactionMode == mode
+            val tag = when (mode) {
+              WaveformInteractionMode.SCRUB -> "waveform_mode_scrub"
+              WaveformInteractionMode.ENVELOPE -> "waveform_mode_envelope"
+              WaveformInteractionMode.MUTE -> "waveform_mode_mute"
+            }
+            FilterChip(
+              selected = selected,
+              enabled = hasTrack,
+              onClick = { onSelectInteractionMode(mode) },
+              leadingIcon = {
+                Icon(
+                  imageVector = icon,
+                  contentDescription = null,
+                  modifier = Modifier.size(14.dp),
+                )
+              },
+              label = {
+                Text(
+                  text = label,
+                  style = MaterialTheme.typography.labelSmall,
+                )
+              },
+              modifier = Modifier.testTag(tag),
+            )
+          }
+        }
+
+        if (track != null && bufferDiagnostics != null && bufferDiagnostics.sampleCount > 0) {
+          FourierSpectrumStrip(
+            diagnostics = bufferDiagnostics,
+            isPlaying = playbackState.isPlaying,
+            liveBpm = playbackState.liveBpm,
+            liveBpmConfidence = playbackState.liveBpmConfidence,
+            liveBeatPulse = playbackState.liveBeatPulse,
+            isBpmAnalyzing = playbackState.isBpmAnalyzing,
+            liveSpectrum = playbackState.liveSpectrum,
+          )
+        }
+
+        FrequencySpectrumAnalyzerCard(
+          liveSpectrum = playbackState.liveSpectrum,
+          bufferDiagnostics = bufferDiagnostics,
+          isPlaying = playbackState.isPlaying,
+          hasTrack = hasTrack,
+        )
+      }
         }
       }
     }

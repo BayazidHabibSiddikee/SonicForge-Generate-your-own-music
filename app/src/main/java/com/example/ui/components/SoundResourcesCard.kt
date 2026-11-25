@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -62,7 +63,9 @@ fun SoundResourcesCard(
   modifier: Modifier = Modifier,
 ) {
   val colorScheme = MaterialTheme.colorScheme
+  var expanded by remember { mutableStateOf(false) }
   var showCustomSynth by remember { mutableStateOf(false) }
+  val isSectionExpanded = expanded || generatingResourceId != null
 
   Surface(
     modifier = modifier
@@ -79,14 +82,18 @@ fun SoundResourcesCard(
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .minimumInteractiveComponentSize()
+          .clickable { expanded = !expanded }
+          .testTag("sound_resources_expand_toggle"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Row(
           modifier = Modifier.weight(1f),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           Icon(
             imageVector = Icons.Rounded.GraphicEq,
@@ -97,96 +104,107 @@ fun SoundResourcesCard(
           Column {
             Text(
               text = stringResource(R.string.sound_resources_title),
-              style = MaterialTheme.typography.titleMedium,
+              style = MaterialTheme.typography.titleSmall,
               color = colorScheme.onSurface,
             )
             Text(
-              text = stringResource(R.string.sound_resources_subtitle),
+              text = if (isSectionExpanded) {
+                stringResource(R.string.sound_resources_subtitle)
+              } else {
+                stringResource(R.string.sound_packs_collapsed_subtitle)
+              },
               style = MaterialTheme.typography.labelSmall,
               color = colorScheme.onSurfaceVariant,
-              maxLines = 2,
+              maxLines = 1,
               overflow = TextOverflow.Ellipsis,
             )
           }
         }
+        Icon(
+          imageVector = if (isSectionExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+          contentDescription = null,
+          tint = colorScheme.onSurfaceVariant,
+        )
       }
 
-      // Configured on-device sound resource bank (real-time Fourier/FM DSP beds)
-      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StudioSoundResource.entries.forEach { res ->
-          val isThisGenerating = generatingResourceId == res.id
-          Surface(
-            shape = MaterialTheme.shapes.medium,
-            color = colorScheme.surfaceContainer,
-            border = BorderStroke(1.dp, colorScheme.outlineVariant),
-          ) {
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-              Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+      AnimatedVisibility(visible = isSectionExpanded) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          // Configured on-device sound resource bank (real-time Fourier/FM DSP beds)
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            StudioSoundResource.entries.forEach { res ->
+              val isThisGenerating = generatingResourceId == res.id
+              Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, colorScheme.outlineVariant),
               ) {
                 Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                   verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                  Text(
-                    text = res.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                  )
-                  Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = colorScheme.secondaryContainer,
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                   ) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                      Text(
+                        text = res.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                      )
+                      Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = colorScheme.secondaryContainer,
+                      ) {
+                        Text(
+                          text = res.badge,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = colorScheme.onSecondaryContainer,
+                          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                      }
+                    }
                     Text(
-                      text = res.badge,
+                      text = res.subtitle,
                       style = MaterialTheme.typography.labelSmall,
-                      color = colorScheme.onSecondaryContainer,
-                      modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                      color = colorScheme.onSurfaceVariant,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
                     )
                   }
-                }
-                Text(
-                  text = res.subtitle,
-                  style = MaterialTheme.typography.labelSmall,
-                  color = colorScheme.onSurfaceVariant,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                )
-              }
 
-              OutlinedButton(
-                onClick = { onGenerateResource(res) },
-                enabled = generatingResourceId == null && !isCustomGenerating,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier
-                  .minimumInteractiveComponentSize()
-                  .testTag("sound_resource_btn_${res.id}"),
-              ) {
-                if (isThisGenerating) {
-                  CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                  Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                  Spacer(modifier = Modifier.width(4.dp))
-                  Text(
-                    text = stringResource(R.string.sound_resource_generate),
-                    style = MaterialTheme.typography.labelSmall,
-                  )
+                  OutlinedButton(
+                    onClick = { onGenerateResource(res) },
+                    enabled = generatingResourceId == null && !isCustomGenerating,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                      .minimumInteractiveComponentSize()
+                      .testTag("sound_resource_btn_${res.id}"),
+                  ) {
+                    if (isThisGenerating) {
+                      CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                      Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                      Spacer(modifier = Modifier.width(4.dp))
+                      Text(
+                        text = stringResource(R.string.sound_resource_generate),
+                        style = MaterialTheme.typography.labelSmall,
+                      )
+                    }
+                  }
                 }
               }
             }
           }
-        }
-      }
 
       // Collapsible custom DSP synth formula input
       TextButton(
@@ -261,6 +279,8 @@ fun SoundResourcesCard(
               Text(stringResource(R.string.generate_track_button))
             }
           }
+        }
+      }
         }
       }
     }

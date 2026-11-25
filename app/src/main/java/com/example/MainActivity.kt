@@ -25,10 +25,13 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ai.configureAppCheck
 import com.example.audio.AudioExportFormat
 import com.example.audio.Mp3AudioExporter
 import com.example.model.GeneratedTrack
+import com.example.ui.AiProducerActions
 import com.example.ui.NotificationPermissionStatus
+import com.example.ui.RoomStorageExportActions
 import com.example.ui.SonicForgeScreen
 import com.example.ui.SonicForgeViewModel
 import com.example.ui.theme.SonicForgeTheme
@@ -37,6 +40,7 @@ import com.example.ui.theme.resolveDarkTheme
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    configureAppCheck(this, intent)
     enableEdgeToEdge()
     setContent {
       val viewModel: SonicForgeViewModel = viewModel()
@@ -107,6 +111,14 @@ class MainActivity : ComponentActivity() {
           }
         }
 
+        val exportDirectoryTreeLauncher = rememberLauncherForActivityResult(
+          contract = ActivityResultContracts.OpenDocumentTree(),
+        ) { treeUri ->
+          if (treeUri != null) {
+            viewModel.exportPendingRoomTracksToDirectoryTree(treeUri)
+          }
+        }
+
         LaunchedEffect(Unit) {
           refreshNotificationPermissionStatus()
         }
@@ -172,6 +184,10 @@ class MainActivity : ComponentActivity() {
               createMp3Launcher.launch(
                 Mp3AudioExporter.suggestedFileName(fallbackTrack.title, AudioExportFormat.MP3)
               )
+            },
+            launchRoomExportDirectoryPicker = { trackIds ->
+              viewModel.prepareRoomDirectoryPickerExport(trackIds)
+              exportDirectoryTreeLauncher.launch(null)
             },
           )
         }
@@ -342,6 +358,8 @@ class MainActivity : ComponentActivity() {
           onReuseHistoryPrompt = bindings.onReuseHistoryPrompt,
           onDeleteHistoryEntry = bindings.onDeleteHistoryEntry,
           onClearAllHistory = bindings.onClearAllHistory,
+          aiProducerActions = bindings.aiProducerActions,
+          roomStorageExportActions = bindings.roomStorageExportActions,
         )
       }
     }
@@ -358,6 +376,7 @@ private class SonicForgeScreenBindings(
   val onOpenNotificationSettings: () -> Unit,
   onPromptNotificationsIfNeeded: () -> Unit,
   launchSafMp3Save: (GeneratedTrack) -> Unit,
+  launchRoomExportDirectoryPicker: (Set<String>?) -> Unit,
 ) {
   val onSelectThemeMode = viewModel::setThemeMode
   val onSelectEngine = viewModel::selectEngine
@@ -543,5 +562,44 @@ private class SonicForgeScreenBindings(
   val onReuseHistoryPrompt = viewModel::reusePromptFromHistory
   val onDeleteHistoryEntry = viewModel::deleteHistoryEntry
   val onClearAllHistory = viewModel::clearAllTrackHistory
+  val aiProducerActions = AiProducerActions(
+    onSelectAiEngine = viewModel::selectAiProducerEngine,
+    onAiPromptChanged = viewModel::onAiProducerPromptChanged,
+    onArrangeTrack = viewModel::arrangeWithSelectedEngine,
+    onRenderAiFullMix = viewModel::renderAiArrangementFullMix,
+    onApplyPlanToInstruments = viewModel::applyAiPlanToInstruments,
+    onDetachSampleFromAiMix = viewModel::detachSampleFromAiMix,
+    onOfflineQueryChanged = viewModel::onOfflineLibraryQueryChanged,
+    onSelectOfflineCategory = viewModel::selectOfflineLibraryCategory,
+    onPreviewOfflineAsset = viewModel::previewOfflineMusicAsset,
+    onImportOfflineAsset = viewModel::importOfflineMusicAssetToMix,
+  )
+  val roomStorageExportActions = RoomStorageExportActions(
+    onSelectFormat = viewModel::setRoomExportFormat,
+    onExportAllToDeviceMusic = {
+      viewModel.exportRoomTracksToDeviceMusic(
+        trackIds = null,
+        onRequireDirectoryPicker = { launchRoomExportDirectoryPicker(null) },
+      )
+    },
+    onExportSelectedToDeviceMusic = {
+      val ids = viewModel.uiState.value.selectedTrackIds
+      viewModel.exportRoomTracksToDeviceMusic(
+        trackIds = ids,
+        onRequireDirectoryPicker = { launchRoomExportDirectoryPicker(ids) },
+      )
+    },
+    onChooseStorageDirectoryForAll = { launchRoomExportDirectoryPicker(null) },
+    onChooseStorageDirectoryForSelected = {
+      launchRoomExportDirectoryPicker(viewModel.uiState.value.selectedTrackIds)
+    },
+    onExportHistoryItemToStorage = { historyItem ->
+      viewModel.exportHistoryItemToDeviceStorage(
+        item = historyItem,
+        onRequireDirectoryPicker = { launchRoomExportDirectoryPicker(setOf(historyItem.trackId)) },
+      )
+    },
+    onDismissStatus = viewModel::dismissRoomExportStatus,
+  )
 }
 

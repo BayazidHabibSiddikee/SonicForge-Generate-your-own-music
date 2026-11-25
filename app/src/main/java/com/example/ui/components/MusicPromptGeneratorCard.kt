@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,8 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Memory
-import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -38,8 +40,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -54,16 +61,15 @@ import com.example.R
 import com.example.ui.GenerationEngine
 
 private val quickPromptPresets = listOf(
-  "Lo-fi chill beat with warm Rhodes piano 84 BPM",
-  "Neon synthwave night drive arpeggio 112 BPM",
-  "Ambient cinematic atmospheric pads 72 BPM",
-  "Upbeat funky house bassline and groove 122 BPM",
+  "Lo-Fi Chill" to "Lo-fi chill beat with warm Rhodes piano 84 BPM",
+  "Synthwave" to "Neon synthwave night drive arpeggio 112 BPM",
+  "Ambient" to "Ambient cinematic atmospheric pads 72 BPM",
+  "Funky House" to "Upbeat funky house bassline and groove 122 BPM",
 )
 
 /**
- * Jetpack Compose UI component allowing users to enter a text prompt for music generation,
- * choose the target music generation API/engine, apply inspiration presets, and trigger
- * generation with a dedicated 'Generate' button.
+ * Clean, distraction-free music prompt generator card with progressive disclosure for engine selection,
+ * concise quick-idea chips, and a primary 'Generate' button.
  */
 @Composable
 fun MusicPromptGeneratorCard(
@@ -81,6 +87,14 @@ fun MusicPromptGeneratorCard(
   val colorScheme = MaterialTheme.colorScheme
   val isApiEngine = selectedEngine != GenerationEngine.FOURIER_SYNTH
   val canGenerate = promptInput.isNotBlank() && !isGenerating && !isBusyExternal
+  var showEngineSelector by remember { mutableStateOf(false) }
+
+  val activeEngineLabelRes = when (selectedEngine) {
+    GenerationEngine.HF_MUSICGEN -> R.string.engine_hf_musicgen
+    GenerationEngine.HF_AUDIO_LDM -> R.string.engine_hf_audioldm
+    GenerationEngine.HF_STABLE_AUDIO -> R.string.engine_hf_stable_audio
+    GenerationEngine.FOURIER_SYNTH -> R.string.engine_fourier_dsp
+  }
 
   Surface(
     modifier = modifier
@@ -88,7 +102,7 @@ fun MusicPromptGeneratorCard(
       .testTag("music_prompt_generator_card"),
     shape = MaterialTheme.shapes.large,
     color = colorScheme.surfaceContainer,
-    tonalElevation = 4.dp,
+    tonalElevation = 2.dp,
     border = BorderStroke(
       width = 1.dp,
       color = if (isGenerating) {
@@ -105,19 +119,18 @@ fun MusicPromptGeneratorCard(
           drawRect(
             brush = Brush.radialGradient(
               colors = listOf(
-                colorScheme.primary.copy(alpha = if (isGenerating) 0.18f else 0.09f),
-                colorScheme.secondary.copy(alpha = 0.04f),
+                colorScheme.primary.copy(alpha = if (isGenerating) 0.14f else 0.06f),
                 Color.Transparent,
               ),
-              center = Offset(size.width * 0.88f, size.height * 0.12f),
-              radius = size.maxDimension * 0.75f,
+              center = Offset(size.width * 0.9f, size.height * 0.1f),
+              radius = size.maxDimension * 0.7f,
             )
           )
         }
         .padding(16.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      // Header + API / Local Mode Pill
+      // Clean Single-Line Header + Collapsible Engine Pill
       Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -128,46 +141,34 @@ fun MusicPromptGeneratorCard(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-          Surface(
-            shape = MaterialTheme.shapes.medium,
-            color = colorScheme.primaryContainer,
-          ) {
-            Icon(
-              imageVector = Icons.Rounded.AutoAwesome,
-              contentDescription = null,
-              tint = colorScheme.onPrimaryContainer,
-              modifier = Modifier
-                .padding(8.dp)
-                .size(20.dp),
-            )
-          }
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = stringResource(R.string.music_prompt_card_title),
-              style = MaterialTheme.typography.titleMedium,
-              color = colorScheme.onSurface,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-              text = stringResource(R.string.music_prompt_card_subtitle),
-              style = MaterialTheme.typography.bodySmall,
-              color = colorScheme.onSurfaceVariant,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
+          Icon(
+            imageVector = Icons.Rounded.AutoAwesome,
+            contentDescription = null,
+            tint = colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+          )
+          Text(
+            text = stringResource(R.string.music_prompt_card_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
         }
 
         Spacer(modifier = Modifier.width(8.dp))
 
         Surface(
-          shape = RoundedCornerShape(8.dp),
+          shape = RoundedCornerShape(999.dp),
           color = if (isApiEngine) colorScheme.secondaryContainer else colorScheme.surfaceContainerHighest,
-          modifier = Modifier.testTag("music_prompt_mode_badge"),
+          modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(enabled = !isGenerating) { showEngineSelector = !showEngineSelector }
+            .testTag("music_prompt_mode_badge"),
         ) {
           Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
           ) {
@@ -175,51 +176,60 @@ fun MusicPromptGeneratorCard(
               imageVector = if (isApiEngine) Icons.Rounded.Cloud else Icons.Rounded.Memory,
               contentDescription = null,
               tint = if (isApiEngine) colorScheme.onSecondaryContainer else colorScheme.onSurfaceVariant,
-              modifier = Modifier.size(13.dp),
+              modifier = Modifier.size(14.dp),
             )
             Text(
-              text = stringResource(
-                if (isApiEngine) R.string.music_prompt_api_badge else R.string.music_prompt_local_badge
-              ),
+              text = stringResource(activeEngineLabelRes),
               style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
               color = if (isApiEngine) colorScheme.onSecondaryContainer else colorScheme.onSurfaceVariant,
+              maxLines = 1,
+            )
+            Icon(
+              imageVector = if (showEngineSelector) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+              contentDescription = null,
+              tint = if (isApiEngine) colorScheme.onSecondaryContainer else colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(14.dp),
             )
           }
         }
       }
 
-      // Music Generation Engine Selector (API Endpoints + Local DSP)
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        val engineOrder = listOf(
-          GenerationEngine.HF_MUSICGEN to R.string.engine_hf_musicgen,
-          GenerationEngine.HF_AUDIO_LDM to R.string.engine_hf_audioldm,
-          GenerationEngine.HF_STABLE_AUDIO to R.string.engine_hf_stable_audio,
-          GenerationEngine.FOURIER_SYNTH to R.string.engine_fourier_dsp,
-        )
-        engineOrder.forEach { (engine, labelRes) ->
-          val selected = selectedEngine == engine
-          FilterChip(
-            selected = selected,
-            enabled = !isGenerating,
-            onClick = { onSelectEngine(engine) },
-            label = {
-              Text(
-                text = stringResource(labelRes),
-                style = MaterialTheme.typography.labelSmall,
-              )
-            },
-            colors = FilterChipDefaults.filterChipColors(
-              selectedContainerColor = colorScheme.primaryContainer,
-              selectedLabelColor = colorScheme.onPrimaryContainer,
-            ),
-            modifier = Modifier.testTag("engine_chip_${engine.testTagSuffix}"),
+      // Progressive Disclosure: Engine Selector Row (hidden until user taps engine pill)
+      AnimatedVisibility(visible = showEngineSelector) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          val engineOrder = listOf(
+            GenerationEngine.HF_MUSICGEN to R.string.engine_hf_musicgen,
+            GenerationEngine.HF_AUDIO_LDM to R.string.engine_hf_audioldm,
+            GenerationEngine.HF_STABLE_AUDIO to R.string.engine_hf_stable_audio,
+            GenerationEngine.FOURIER_SYNTH to R.string.engine_fourier_dsp,
           )
+          engineOrder.forEach { (engine, labelRes) ->
+            FilterChip(
+              selected = selectedEngine == engine,
+              enabled = !isGenerating,
+              onClick = {
+                onSelectEngine(engine)
+                showEngineSelector = false
+              },
+              label = {
+                Text(
+                  text = stringResource(labelRes),
+                  style = MaterialTheme.typography.labelSmall,
+                )
+              },
+              colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = colorScheme.primaryContainer,
+                selectedLabelColor = colorScheme.onPrimaryContainer,
+              ),
+              modifier = Modifier.testTag("engine_chip_${engine.testTagSuffix}"),
+            )
+          }
         }
       }
 
@@ -227,11 +237,11 @@ fun MusicPromptGeneratorCard(
       OutlinedTextField(
         value = promptInput,
         onValueChange = onPromptChanged,
-        label = { Text(stringResource(R.string.music_prompt_field_label)) },
         placeholder = { Text(stringResource(R.string.music_prompt_field_placeholder)) },
         minLines = 2,
         maxLines = 3,
         enabled = !isGenerating,
+        shape = RoundedCornerShape(14.dp),
         trailingIcon = {
           if (promptInput.isNotEmpty() && !isGenerating) {
             IconButton(
@@ -256,16 +266,16 @@ fun MusicPromptGeneratorCard(
         ),
         colors = OutlinedTextFieldDefaults.colors(
           focusedBorderColor = colorScheme.primary,
-          unfocusedBorderColor = colorScheme.outline,
-          focusedContainerColor = colorScheme.surfaceContainerLow,
-          unfocusedContainerColor = colorScheme.surfaceContainerLow,
+          unfocusedBorderColor = colorScheme.outlineVariant,
+          focusedContainerColor = colorScheme.surfaceContainerLowest,
+          unfocusedContainerColor = colorScheme.surfaceContainerLowest,
         ),
         modifier = Modifier
           .fillMaxWidth()
           .testTag("music_prompt_input_field"),
       )
 
-      // Quick Prompt Inspiration Presets
+      // Concise Quick Idea Chips
       Row(
         modifier = Modifier
           .fillMaxWidth()
@@ -273,29 +283,20 @@ fun MusicPromptGeneratorCard(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        quickPromptPresets.forEachIndexed { index, preset ->
+        quickPromptPresets.forEachIndexed { index, (shortLabel, fullPrompt) ->
           AssistChip(
-            onClick = { onApplyPreset(preset) },
+            onClick = { onApplyPreset(fullPrompt) },
             enabled = !isGenerating,
-            leadingIcon = {
-              Icon(
-                imageVector = Icons.Rounded.MusicNote,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp),
-              )
-            },
             label = {
               Text(
-                text = preset,
+                text = shortLabel,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
               )
             },
             colors = AssistChipDefaults.assistChipColors(
-              containerColor = colorScheme.surfaceContainerHigh,
+              containerColor = colorScheme.surfaceContainerLow,
               labelColor = colorScheme.onSurfaceVariant,
-              leadingIconContentColor = colorScheme.secondary,
             ),
             modifier = Modifier.testTag("music_prompt_preset_$index"),
           )
@@ -308,7 +309,6 @@ fun MusicPromptGeneratorCard(
           Surface(
             shape = MaterialTheme.shapes.small,
             color = colorScheme.errorContainer,
-            border = BorderStroke(1.dp, colorScheme.error.copy(alpha = 0.4f)),
             modifier = Modifier
               .fillMaxWidth()
               .testTag("music_prompt_error_banner"),
@@ -327,6 +327,7 @@ fun MusicPromptGeneratorCard(
       Button(
         onClick = onGenerateClick,
         enabled = canGenerate,
+        shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(
           containerColor = colorScheme.primary,
           contentColor = colorScheme.onPrimary,

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Piano
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -92,6 +93,7 @@ fun TrackHistoryCard(
   onReusePrompt: (String) -> Unit,
   onDeleteHistoryItem: (String) -> Unit,
   onClearAllHistory: () -> Unit,
+  onExportHistoryItem: ((TrackHistoryItem) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val colorScheme = MaterialTheme.colorScheme
@@ -232,73 +234,76 @@ fun TrackHistoryCard(
         }
       }
 
-      // Search Input
-      OutlinedTextField(
-        value = searchQuery,
-        onValueChange = onSearchQueryChanged,
-        placeholder = {
-          Text(
-            text = stringResource(R.string.history_search_placeholder),
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-        },
-        leadingIcon = {
-          Icon(
-            imageVector = Icons.Rounded.Search,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-          )
-        },
-        trailingIcon = {
-          if (searchQuery.isNotEmpty()) {
-            IconButton(
-              onClick = { onSearchQueryChanged("") },
-              modifier = Modifier.minimumInteractiveComponentSize(),
-            ) {
-              Icon(
-                imageVector = Icons.Rounded.Close,
-                contentDescription = "Clear history search",
-                modifier = Modifier.size(18.dp),
-              )
+      if (totalHistoryCount > 0 || searchQuery.isNotBlank()) {
+        // Search Input
+        OutlinedTextField(
+          value = searchQuery,
+          onValueChange = onSearchQueryChanged,
+          placeholder = {
+            Text(
+              text = stringResource(R.string.history_search_placeholder),
+              style = MaterialTheme.typography.bodySmall,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          },
+          leadingIcon = {
+            Icon(
+              imageVector = Icons.Rounded.Search,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+          },
+          trailingIcon = {
+            if (searchQuery.isNotEmpty()) {
+              IconButton(
+                onClick = { onSearchQueryChanged("") },
+                modifier = Modifier.minimumInteractiveComponentSize(),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Close,
+                  contentDescription = "Clear history search",
+                  modifier = Modifier.size(18.dp),
+                )
+              }
             }
-          }
-        },
-        singleLine = true,
-        colors = OutlinedTextFieldDefaults.colors(
-          focusedBorderColor = colorScheme.primary,
-          unfocusedBorderColor = colorScheme.outlineVariant,
-        ),
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("history_search_input"),
-      )
+          },
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = colorScheme.primary,
+            unfocusedBorderColor = colorScheme.outlineVariant,
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("history_search_input"),
+        )
 
-      // Source Type Filter Chips
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-      ) {
-        historyFilterTypes.forEach { type ->
-          val selected = selectedTypeFilter.equals(type, ignoreCase = true)
-          FilterChip(
-            selected = selected,
-            onClick = { onSelectTypeFilter(type) },
-            label = {
-              Text(
-                text = type,
-                style = MaterialTheme.typography.labelSmall,
-              )
-            },
-            colors = FilterChipDefaults.filterChipColors(
-              selectedContainerColor = colorScheme.primaryContainer,
-              selectedLabelColor = colorScheme.onPrimaryContainer,
-            ),
-            modifier = Modifier.testTag("history_filter_${type.lowercase().replace(" ", "_")}"),
-          )
+        // Source Type Filter Chips
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          historyFilterTypes.forEach { type ->
+            val selected = selectedTypeFilter.equals(type, ignoreCase = true)
+            FilterChip(
+              selected = selected,
+              onClick = { onSelectTypeFilter(type) },
+              label = {
+                Text(
+                  text = type,
+                  style = MaterialTheme.typography.labelSmall,
+                )
+              },
+              colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = colorScheme.primaryContainer,
+                selectedLabelColor = colorScheme.onPrimaryContainer,
+              ),
+              modifier = Modifier.testTag("history_filter_${type.lowercase().replace(" ", "_")}"),
+            )
+          }
         }
       }
 
@@ -347,6 +352,7 @@ fun TrackHistoryCard(
               isPlayingThis = isCurrent && isPlaying,
               onPlay = { onPlayHistoryItem(item) },
               onReusePrompt = { onReusePrompt(item.prompt) },
+              onExport = onExportHistoryItem?.let { handler -> { handler(item) } },
               onDelete = { onDeleteHistoryItem(item.id) },
             )
           }
@@ -364,6 +370,7 @@ private fun TrackHistoryRow(
   isPlayingThis: Boolean,
   onPlay: () -> Unit,
   onReusePrompt: () -> Unit,
+  onExport: (() -> Unit)? = null,
   onDelete: () -> Unit,
 ) {
   val colorScheme = MaterialTheme.colorScheme
@@ -492,6 +499,27 @@ private fun TrackHistoryRow(
             },
             style = MaterialTheme.typography.labelMedium,
           )
+        }
+
+        if (onExport != null && item.fileExists) {
+          OutlinedButton(
+            onClick = onExport,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("history_export_${item.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.SaveAlt,
+              contentDescription = null,
+              modifier = Modifier.size(15.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+              text = stringResource(R.string.history_export_button),
+              style = MaterialTheme.typography.labelMedium,
+            )
+          }
         }
 
         if (item.prompt.isNotBlank()) {

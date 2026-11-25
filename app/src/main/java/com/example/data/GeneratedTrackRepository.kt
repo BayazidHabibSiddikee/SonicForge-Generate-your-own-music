@@ -63,6 +63,13 @@ data class TrackWithBufferDiagnostics(
   val autoTagResult: TrackAutoTagResult? = null,
 )
 
+data class AiArrangedSessionResult(
+  val masterTrack: GeneratedTrack,
+  val masterDiagnostics: RawBufferDiagnostics,
+  val stemTrackIds: List<String>,
+  val stemGains: Map<String, Float>,
+)
+
 class GeneratedTrackRepository(
   private val context: Context,
   private val autoTagger: TrackAutoTagger = PlaceholderTrackAutoTagger(),
@@ -511,6 +518,178 @@ class GeneratedTrackRepository(
     TrackWithBufferDiagnostics(
       track = saved,
       diagnostics = mergedBuffer.toDiagnostics(),
+    )
+  }
+
+  /**
+   * Imports a synthesized built-in offline studio music loop or texture WAV into local studio
+   * storage, optionally normalizes loudness, and persists it in Room + Track History.
+   */
+  suspend fun importOfflineMusicAsset(
+    asset: com.example.audio.OfflineMusicAsset,
+    renderedWavFile: File,
+    targetLufs: Float = LoudnessNormalizerDsp.DEFAULT_TARGET_LUFS,
+    applyPostGain: Boolean = true,
+  ): TrackWithBufferDiagnostics = withContext(Dispatchers.IO) {
+    if (!tracksDir.exists()) {
+      tracksDir.mkdirs()
+    }
+    if (!renderedWavFile.exists() || renderedWavFile.length() == 0L) {
+      throw IllegalStateException("Offline studio audio file is missing or empty.")
+    }
+
+    val id = UUID.randomUUID().toString()
+    val localCopy = File(tracksDir, "offline_${asset.id}_$id.wav")
+    renderedWavFile.copyTo(localCopy, overwrite = true)
+
+    val decodedBuffer = FourierAudioBufferProcessor.decodeFileToRawBuffer(
+      file = localCopy,
+      bridgeSource = "Offline Studio Pack",
+    )
+    val (finalFile, rawBuffer) = if (
+      applyPostGain &&
+      decodedBuffer.pcmSamples.isNotEmpty() &&
+      asset.category != com.example.audio.OfflineSampleCategory.TEXTURES
+    ) {
+      val norm = LoudnessNormalizerDsp.normalizePcm(
+        pcmSamples = decodedBuffer.pcmSamples,
+        sampleRate = decodedBuffer.sampleRate,
+        channelCount = decodedBuffer.channelCount,
+        targetLufs = targetLufs,
+      )
+      val analyzed = FourierAudioBufferProcessor.analyzeRawPcm(
+        pcmSamples = norm.normalizedSamples,
+        sampleRate = decodedBuffer.sampleRate,
+        channelCount = decodedBuffer.channelCount,
+        bridgeSource = "Offline Studio Pack",
+      )
+      FourierAudioBufferProcessor.writeWavFile(localCopy, analyzed)
+      localCopy to analyzed
+    } else {
+      localCopy to decodedBuffer
+    }
+
+    val analysis = AudioWaveformExtractor.analyzeFile(finalFile)
+    val waveformPeaks = if (rawBuffer.pcmSamples.isNotEmpty()) {
+      FourierAudioBufferProcessor.extractWaveformPeaks(rawBuffer.pcmSamples)
+    } else {
+      analysis.waveformPeaks
+    }
+    val durationMs = rawBuffer.durationMs.takeIf { it > 300L }
+      ?: analysis.durationMs.takeIf { it > 300L }
+      ?: (asset.durationSec * 1000.0).toLong().coerceAtLeast(500L)
+
+    val categoryLabel = when (asset.category) {
+      com.example.audio.OfflineSampleCategory.FULL_MUSIC -> "Offline Music"
+      com.example.audio.OfflineSampleCategory.TEXTURES -> "Textures"
+      else -> "Samples"
+    }
+    val saved = GeneratedTrack(
+      id = id,
+      title = asset.title,
+      prompt = "Built-in Offline ${asset.category.label} · ${asset.subtitle}",
+      genre = asset.genre,
+      bpm = asset.bpm,
+      musicalKey = asset.musicalKey,
+      durationMs = durationMs,
+      filePath = finalFile.absolutePath,
+      fileSizeBytes = finalFile.length(),
+      waveformPeaks = waveformPeaks,
+      createdAtEpochMs = System.currentTimeMillis(),
+      sourceLabel = "Offline Pack · ${asset.category.label}",
+      category = categoryLabel,
+      tags = (listOf("Offline", asset.genre) + asset.tags.take(3)).distinct(),
+    )
+    dao.insertTrack(saved.toEntity())
+    historyDao.insertHistoryEntry(
+      saved.toHistoryEntity(
+        instrumentType = TrackHistoryTypes.SOUND_PACK,
+        engineOrSource = "Offline Studio Pack",
+      ),
+    )
+    TrackWithBufferDiagnostics(
+      track = saved,
+      diagnostics = rawBuffer.toDiagnostics(),
+    )
+  }
+
+  /**
+   * Renders a coordinated Piano + Guitar + Drum session from a [MusicArrangementPlan],
+   * blends in an optional attached Offline Music/Texture layer, and merges all stems into a
+   * finished master mix persisted in Room and Track History.
+   */
+  suspend fun renderAiArrangementSession(
+    plan: com.example.ai.MusicArrangementPlan,
+    attachedSampleTrack: GeneratedTrack? = null,
+    targetLufs: Float = LoudnessNormalizerDsp.DEFAULT_TARGET_LUFS,
+    applyPostGain: Boolean = true,
+  ): AiArrangedSessionResult = withContext(Dispatchers.IO) {
+    val pianoResult = generatePianoTrack(
+      voice = plan.pianoVoice,
+      progression = plan.pianoProgression,
+      recordedNotes = emptyList(),
+      bpm = plan.bpm,
+      bars = 4,
+      targetLufs = targetLufs,
+      applyPostGain = applyPostGain,
+    )
+    val guitarResult = generateGuitarTrack(
+      voice = plan.guitarVoice,
+      chordSequence = plan.guitarChords,
+      strumStyle = plan.guitarStrumStyle,
+      recordedPlucks = emptyList(),
+      bpm = plan.bpm,
+      bars = 4,
+      targetLufs = targetLufs,
+      applyPostGain = applyPostGain,
+    )
+    val drumState = StepSequencerState(
+      pattern = plan.drumPreset.buildGrid(),
+      bpm = plan.bpm,
+      drumKit = plan.drumKit,
+      selectedPresetName = plan.drumPreset.label,
+    )
+    val drumResult = renderSequencerPatternToTrack(
+      sequencerState = drumState,
+      targetLufs = targetLufs,
+      applyPostGain = applyPostGain,
+    )
+
+    val stems = buildList {
+      add(MixStemSpec(track = pianoResult.track, gain = plan.pianoGain, loopToMatch = true))
+      add(MixStemSpec(track = guitarResult.track, gain = plan.guitarGain, loopToMatch = true))
+      add(MixStemSpec(track = drumResult.track, gain = plan.drumGain, loopToMatch = true))
+      if (attachedSampleTrack != null && File(attachedSampleTrack.filePath).exists()) {
+        add(MixStemSpec(track = attachedSampleTrack, gain = plan.sampleGain, loopToMatch = true))
+      }
+    }
+
+    val masterResult = mergeTracksToMaster(
+      title = plan.title,
+      stems = stems,
+      targetLufs = targetLufs,
+      applyPostGain = applyPostGain,
+    )
+    val updatedMaster = masterResult.track.copy(
+      prompt = "${plan.engineLabel} Arrangement (${plan.genre} · ${plan.musicalKey} · ${plan.bpm} BPM): ${plan.sourcePrompt}",
+      genre = plan.genre,
+      bpm = plan.bpm,
+      musicalKey = plan.musicalKey,
+      sourceLabel = if (attachedSampleTrack != null) {
+        "${plan.engineLabel} + Layer (${stems.size} stems)"
+      } else {
+        "${plan.engineLabel} Mix (${stems.size} stems)"
+      },
+      tags = listOf(plan.engineLabel, plan.genre, "${plan.bpm} BPM", "Merged").distinct(),
+    )
+    dao.insertTrack(updatedMaster.toEntity())
+    historyDao.updateTitleByTrackId(updatedMaster.id, updatedMaster.title)
+
+    AiArrangedSessionResult(
+      masterTrack = updatedMaster,
+      masterDiagnostics = masterResult.diagnostics,
+      stemTrackIds = stems.map { it.track.id },
+      stemGains = stems.associate { it.track.id to it.gain },
     )
   }
 
@@ -1237,6 +1416,56 @@ class GeneratedTrackRepository(
     withContext(Dispatchers.IO) {
       Mp3AudioExporter.createShareAudioIntent(context, track, config)
     }
+
+  suspend fun getRoomTrackById(trackId: String): GeneratedTrack? = withContext(Dispatchers.IO) {
+    dao.getTrackById(trackId)?.toDomain()
+  }
+
+  /**
+   * Queries generated audio tracks directly from the local Room database and batch-exports them
+   * into the device's public Music/SonicForge directory via Scoped MediaStore (Android 10+).
+   */
+  suspend fun exportRoomTracksToDeviceMusicDirectory(
+    trackIds: Set<String>? = null,
+    config: AudioExportConfig = AudioExportConfig(format = AudioExportFormat.MP3),
+    onProgress: (com.example.audio.RoomExportProgress) -> Unit = {},
+  ): com.example.audio.BatchStorageExportResult = withContext(Dispatchers.IO) {
+    val roomTracks = dao.getAllTracksOnce()
+      .map { it.toDomain() }
+      .let { all ->
+        if (trackIds.isNullOrEmpty()) all else all.filter { it.id in trackIds }
+      }
+    com.example.audio.RoomTracksStorageExporter.exportTracksToMediaStoreDirectory(
+      context = context,
+      tracks = roomTracks,
+      config = config,
+      onProgress = onProgress,
+    )
+  }
+
+  /**
+   * Queries generated audio tracks directly from the local Room database and exports them into
+   * a user-selected device storage directory URI (Storage Access Framework OpenDocumentTree).
+   */
+  suspend fun exportRoomTracksToStorageTreeUri(
+    treeUri: Uri,
+    trackIds: Set<String>? = null,
+    config: AudioExportConfig = AudioExportConfig(format = AudioExportFormat.MP3),
+    onProgress: (com.example.audio.RoomExportProgress) -> Unit = {},
+  ): com.example.audio.BatchStorageExportResult = withContext(Dispatchers.IO) {
+    val roomTracks = dao.getAllTracksOnce()
+      .map { it.toDomain() }
+      .let { all ->
+        if (trackIds.isNullOrEmpty()) all else all.filter { it.id in trackIds }
+      }
+    com.example.audio.RoomTracksStorageExporter.exportTracksToDirectoryTreeUri(
+      context = context,
+      tracks = roomTracks,
+      treeUri = treeUri,
+      config = config,
+      onProgress = onProgress,
+    )
+  }
 
   suspend fun deleteTrack(trackId: String) = withContext(Dispatchers.IO) {
     val existing = dao.getTrackById(trackId)

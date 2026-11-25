@@ -106,11 +106,14 @@ data class SonicForgeUiState(
   val promptInput: String = "",
   val selectedEngine: GenerationEngine = GenerationEngine.HF_MUSICGEN,
   val activeDestination: StudioDestination = StudioDestination.STUDIO,
-  val studioSectionTab: StudioSectionTab = StudioSectionTab.RESOURCES,
+  val studioSectionTab: StudioSectionTab = StudioSectionTab.HISTORY,
   val pianoState: PianoStudioState = PianoStudioState(),
   val guitarState: GuitarStudioState = GuitarStudioState(),
   val drumState: DrumStudioState = DrumStudioState(),
   val mergeMixer: MergeMixerState = MergeMixerState(),
+  val aiProducer: AiProducerState = AiProducerState(),
+  val offlineMusicState: OfflineMusicStudioState = OfflineMusicStudioState(),
+  val roomStorageExport: RoomStorageExportState = RoomStorageExportState(),
   val trackHistory: List<TrackHistoryItem> = emptyList(),
   val totalHistoryCount: Int = 0,
   val historyTypeFilter: String = TrackHistoryTypes.ALL,
@@ -235,6 +238,9 @@ private data class StudioInstrumentsBundle(
   val totalHistoryCount: Int,
   val historyTypeFilter: String,
   val historySearchQuery: String,
+  val aiProducer: AiProducerState,
+  val offlineMusicState: OfflineMusicStudioState,
+  val roomStorageExport: RoomStorageExportState,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -249,16 +255,22 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
   private val metronomeEngine = MetronomeEngine()
   private val studioClipEngine = AudioEngine()
   private val liveInstrumentEngine = LiveInstrumentAudioEngine(studioClipEngine)
+  private val geminiMusicArranger: com.example.ai.MusicArrangerService = com.example.ai.GeminiMusicArranger()
+  private val offlineMusicArranger: com.example.ai.MusicArrangerService = com.example.ai.OfflineMusicArranger()
   val clipAudioEngineState: StateFlow<AudioEngineState> = studioClipEngine.state
 
   private val _promptInput = MutableStateFlow("")
   private val _selectedEngine = MutableStateFlow(GenerationEngine.HF_MUSICGEN)
   private val _activeDestination = MutableStateFlow(StudioDestination.STUDIO)
-  private val _studioSectionTab = MutableStateFlow(StudioSectionTab.RESOURCES)
+  private val _studioSectionTab = MutableStateFlow(StudioSectionTab.HISTORY)
   private val _pianoState = MutableStateFlow(PianoStudioState())
   private val _guitarState = MutableStateFlow(GuitarStudioState())
   private val _drumState = MutableStateFlow(DrumStudioState())
   private val _mergeMixerState = MutableStateFlow(MergeMixerState())
+  private val _aiProducerState = MutableStateFlow(AiProducerState())
+  private val _offlineMusicState = MutableStateFlow(OfflineMusicStudioState())
+  private val _roomStorageExportState = MutableStateFlow(RoomStorageExportState())
+  private var pendingRoomExportTrackIds: Set<String>? = null
   private val _historyTypeFilter = MutableStateFlow(TrackHistoryTypes.ALL)
   private val _historySearchQuery = MutableStateFlow("")
   private val _isQuickSavingMp3 = MutableStateFlow(false)
@@ -502,11 +514,20 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
     listOf(savingMp3, statusMsg, resId, drumState)
   }
 
+  private val aiAndOfflineMusicBundleFlow = combine(
+    _aiProducerState,
+    _offlineMusicState,
+    _roomStorageExportState,
+  ) { ai, offlineMusic, roomExport ->
+    Triple(ai, offlineMusic, roomExport)
+  }
+
   private val studioInstrumentsBundleFlow = combine(
     navAndInstrumentsBundleFlow,
     quickStatusBundleFlow,
     historyUiBundleFlow,
-  ) { navList, statusList, historyList ->
+    aiAndOfflineMusicBundleFlow,
+  ) { navList, statusList, historyList, aiOfflineTriple ->
     @Suppress("UNCHECKED_CAST")
     StudioInstrumentsBundle(
       activeDestination = navList[0] as StudioDestination,
@@ -522,6 +543,9 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
       totalHistoryCount = historyList[1] as Int,
       historyTypeFilter = historyList[2] as String,
       historySearchQuery = historyList[3] as String,
+      aiProducer = aiOfflineTriple.first,
+      offlineMusicState = aiOfflineTriple.second,
+      roomStorageExport = aiOfflineTriple.third,
     )
   }
 
@@ -597,6 +621,9 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
         guitarState = studioBundle.guitarState,
         drumState = studioBundle.drumState,
         mergeMixer = studioBundle.mergeMixer.copy(selectedTrackIds = sanitizedMergeIds),
+        aiProducer = studioBundle.aiProducer,
+        offlineMusicState = studioBundle.offlineMusicState,
+        roomStorageExport = studioBundle.roomStorageExport,
         trackHistory = studioBundle.trackHistory,
         totalHistoryCount = studioBundle.totalHistoryCount,
         historyTypeFilter = studioBundle.historyTypeFilter,
@@ -2909,6 +2936,409 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
 
   fun stopSoundClipAudioEngine() {
     studioClipEngine.stop()
+  }
+
+  // ---------------------------------------------------------------------------
+  // AI & Offline Music Producer (On-Device Offline Model + Gemini Cloud AI)
+  // ---------------------------------------------------------------------------
+
+  fun selectAiProducerEngine(engine: com.example.ai.AiProducerEngine) {
+    _aiProducerState.value = _aiProducerState.value.copy(
+      selectedEngine = engine,
+      errorMessage = null,
+    )
+  }
+
+  fun onAiProducerPromptChanged(prompt: String) {
+    _aiProducerState.value = _aiProducerState.value.copy(
+      promptInput = prompt,
+      errorMessage = null,
+    )
+  }
+
+  fun arrangeWithSelectedEngine() {
+    val prompt = _aiProducerState.value.promptInput.trim()
+    if (prompt.isEmpty() || _aiProducerState.value.isArranging) return
+    val selectedEngine = _aiProducerState.value.selectedEngine
+
+    viewModelScope.launch {
+      _aiProducerState.value = _aiProducerState.value.copy(
+        isArranging = true,
+        errorMessage = null,
+        statusMessage = null,
+      )
+      try {
+        val arranger = when (selectedEngine) {
+          com.example.ai.AiProducerEngine.OFFLINE_MODEL -> offlineMusicArranger
+          com.example.ai.AiProducerEngine.GEMINI_CLOUD -> geminiMusicArranger
+        }
+        val plan = arranger.generateArrangement(prompt)
+        _aiProducerState.value = _aiProducerState.value.copy(
+          isArranging = false,
+          currentPlan = plan,
+          errorMessage = null,
+          statusMessage = "${plan.engineLabel} arranged \"${plan.title}\" (${plan.bpm} BPM · ${plan.musicalKey})",
+        )
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Music arrangement failed ($selectedEngine)", e)
+        _aiProducerState.value = _aiProducerState.value.copy(
+          isArranging = false,
+          errorMessage = e.localizedMessage ?: "Arrangement failed. Please try again or switch to Offline Model.",
+        )
+      }
+    }
+  }
+
+  fun applyAiPlanToInstruments() {
+    val plan = _aiProducerState.value.currentPlan ?: return
+    _pianoState.value = _pianoState.value.copy(
+      selectedVoice = plan.pianoVoice,
+      selectedProgression = plan.pianoProgression,
+      bpm = plan.bpm,
+    )
+    _guitarState.value = _guitarState.value.copy(
+      selectedVoice = plan.guitarVoice,
+      selectedChord = plan.guitarChords.firstOrNull() ?: GuitarChordShape.C_MAJ,
+      chordSequence = plan.guitarChords,
+      strumStyle = plan.guitarStrumStyle,
+      bpm = plan.bpm,
+    )
+    stepSequencerEngine.selectDrumKit(plan.drumKit)
+    stepSequencerEngine.applyPreset(plan.drumPreset)
+    stepSequencerEngine.setManualBpm(plan.bpm)
+    selectReverbPreset(plan.reverbPreset)
+    _aiProducerState.value = _aiProducerState.value.copy(
+      statusMessage = "Loaded ${plan.title} into Piano, Guitar, Drums & Reverb (${plan.bpm} BPM)",
+    )
+  }
+
+  fun renderAiArrangementFullMix() {
+    val plan = _aiProducerState.value.currentPlan ?: return
+    if (_aiProducerState.value.isRenderingMix) return
+
+    applyAiPlanToInstruments()
+    viewModelScope.launch {
+      _aiProducerState.value = _aiProducerState.value.copy(
+        isRenderingMix = true,
+        errorMessage = null,
+        statusMessage = null,
+      )
+      try {
+        val attachedTrackId = _aiProducerState.value.attachedSampleTrackId
+        val attachedSampleTrack = attachedTrackId?.let { id ->
+          uiState.value.allTracks.firstOrNull { it.id == id }
+        }
+        val session = repository.renderAiArrangementSession(
+          plan = plan,
+          attachedSampleTrack = attachedSampleTrack,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        _selectedCategory.value = GeneratedTrackRepository.ALL_CATEGORIES
+        _showFavoritesOnly.value = false
+        _selectedPlaylistId.value = null
+        _activeBufferDiagnostics.value = session.masterDiagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = session.stemTrackIds.toSet(),
+          stemGains = _mergeMixerState.value.stemGains + session.stemGains,
+          customTitle = plan.title,
+          lastStatusMessage = "${plan.engineLabel} mix \"${session.masterTrack.title}\" rendered (${session.stemTrackIds.size} stems)",
+        )
+        playerController.loadTrack(session.masterTrack, autoPlay = true)
+        viewModelScope.launch {
+          historyRepository.recordTrackPlayed(session.masterTrack.id)
+        }
+        _aiProducerState.value = _aiProducerState.value.copy(
+          isRenderingMix = false,
+          statusMessage = "Rendered & playing \"${session.masterTrack.title}\" (${session.stemTrackIds.size} synced stems)",
+        )
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Failed to render AI arrangement mix", e)
+        _aiProducerState.value = _aiProducerState.value.copy(
+          isRenderingMix = false,
+          errorMessage = e.localizedMessage ?: "Failed to render multi-track mix.",
+        )
+      }
+    }
+  }
+
+  fun detachSampleFromAiMix() {
+    _aiProducerState.value = _aiProducerState.value.copy(
+      attachedSampleTrackId = null,
+      attachedSampleTitle = null,
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Built-In Offline Music & Studio Samples Library (100% On-Device, Zero Keys)
+  // ---------------------------------------------------------------------------
+
+  fun onOfflineLibraryQueryChanged(query: String) {
+    val category = _offlineMusicState.value.selectedCategory
+    _offlineMusicState.value = _offlineMusicState.value.copy(
+      searchQuery = query,
+      items = com.example.audio.OfflineMusicLibrary.search(query = query, category = category),
+      errorMessage = null,
+    )
+  }
+
+  fun selectOfflineLibraryCategory(category: com.example.audio.OfflineSampleCategory) {
+    val query = _offlineMusicState.value.searchQuery
+    _offlineMusicState.value = _offlineMusicState.value.copy(
+      selectedCategory = category,
+      items = com.example.audio.OfflineMusicLibrary.search(query = query, category = category),
+      errorMessage = null,
+    )
+  }
+
+  fun previewOfflineMusicAsset(asset: com.example.audio.OfflineMusicAsset) {
+    if (_offlineMusicState.value.previewingAssetId == asset.id) {
+      studioClipEngine.stop()
+      _offlineMusicState.value = _offlineMusicState.value.copy(previewingAssetId = null)
+      return
+    }
+    viewModelScope.launch {
+      _offlineMusicState.value = _offlineMusicState.value.copy(
+        previewingAssetId = asset.id,
+        errorMessage = null,
+      )
+      try {
+        val cacheDir = java.io.File(getApplication<Application>().cacheDir, "offline_music_pack")
+        val wavFile = com.example.audio.OfflineMusicSynthesizerDsp.ensureRenderedWav(
+          asset = asset,
+          cacheDir = cacheDir,
+        )
+        studioClipEngine.playFile(
+          file = wavFile,
+          clipId = "offline-${asset.id}",
+          title = asset.title,
+          looping = false,
+          onCompleted = {
+            if (_offlineMusicState.value.previewingAssetId == asset.id) {
+              _offlineMusicState.value = _offlineMusicState.value.copy(previewingAssetId = null)
+            }
+          },
+        )
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Failed to preview offline music asset", e)
+        _offlineMusicState.value = _offlineMusicState.value.copy(
+          previewingAssetId = null,
+          errorMessage = e.localizedMessage ?: "Unable to preview offline music sample.",
+        )
+      }
+    }
+  }
+
+  fun importOfflineMusicAssetToMix(asset: com.example.audio.OfflineMusicAsset) {
+    if (_offlineMusicState.value.importingAssetId != null) return
+    viewModelScope.launch {
+      _offlineMusicState.value = _offlineMusicState.value.copy(
+        importingAssetId = asset.id,
+        errorMessage = null,
+        statusMessage = null,
+      )
+      try {
+        val cacheDir = java.io.File(getApplication<Application>().cacheDir, "offline_music_pack")
+        val wavFile = com.example.audio.OfflineMusicSynthesizerDsp.ensureRenderedWav(
+          asset = asset,
+          cacheDir = cacheDir,
+        )
+        val imported = repository.importOfflineMusicAsset(
+          asset = asset,
+          renderedWavFile = wavFile,
+          targetLufs = _loudnessTarget.value.lufs,
+          applyPostGain = _autoPostGainEnabled.value,
+        )
+        val recommendedGain = if (asset.category == com.example.audio.OfflineSampleCategory.TEXTURES) {
+          0.55f
+        } else {
+          0.78f
+        }
+        _activeBufferDiagnostics.value = imported.diagnostics
+        _mergeMixerState.value = _mergeMixerState.value.copy(
+          selectedTrackIds = _mergeMixerState.value.selectedTrackIds + imported.track.id,
+          stemGains = _mergeMixerState.value.stemGains + (imported.track.id to recommendedGain),
+          lastStatusMessage = "Added offline track \"${imported.track.title}\" to Multi-Track Merger",
+        )
+        _aiProducerState.value = _aiProducerState.value.copy(
+          attachedSampleTrackId = imported.track.id,
+          attachedSampleTitle = imported.track.title,
+        )
+        _offlineMusicState.value = _offlineMusicState.value.copy(
+          importingAssetId = null,
+          importedAssetIds = _offlineMusicState.value.importedAssetIds + asset.id,
+          statusMessage = "Added \"${imported.track.title}\" to Library & attached to AI/Multi-Track Mixer",
+        )
+        playerController.loadTrack(imported.track, autoPlay = true)
+        viewModelScope.launch {
+          historyRepository.recordTrackPlayed(imported.track.id)
+        }
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Failed to import offline music asset", e)
+        _offlineMusicState.value = _offlineMusicState.value.copy(
+          importingAssetId = null,
+          errorMessage = e.localizedMessage ?: "Failed to add offline music to mix.",
+        )
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Room Database -> Device Storage Directory Export (Scoped MediaStore & SAF)
+  // ---------------------------------------------------------------------------
+
+  fun setRoomExportFormat(format: AudioExportFormat) {
+    _roomStorageExportState.value = _roomStorageExportState.value.copy(
+      format = format,
+      errorMessage = null,
+    )
+  }
+
+  fun dismissRoomExportStatus() {
+    _roomStorageExportState.value = _roomStorageExportState.value.copy(
+      statusMessage = null,
+      errorMessage = null,
+    )
+  }
+
+  fun prepareRoomDirectoryPickerExport(trackIds: Set<String>? = null) {
+    pendingRoomExportTrackIds = trackIds?.takeIf { it.isNotEmpty() }
+  }
+
+  fun exportRoomTracksToDeviceMusic(
+    trackIds: Set<String>? = null,
+    onRequireDirectoryPicker: () -> Unit = {},
+  ) {
+    if (_roomStorageExportState.value.isExporting) return
+    val targetIds = trackIds?.takeIf { it.isNotEmpty() }
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+      pendingRoomExportTrackIds = targetIds
+      onRequireDirectoryPicker()
+      return
+    }
+
+    val format = _roomStorageExportState.value.format
+    viewModelScope.launch {
+      _roomStorageExportState.value = _roomStorageExportState.value.copy(
+        isExporting = true,
+        exportedCount = 0,
+        totalCount = 0,
+        currentTrackTitle = "",
+        statusMessage = null,
+        errorMessage = null,
+      )
+      try {
+        val config = AudioExportConfig(
+          format = format,
+          bitrateKbps = 192,
+          normalizeOutputGain = _autoPostGainEnabled.value,
+          targetOutputLufs = _loudnessTarget.value.lufs,
+        )
+        val result = repository.exportRoomTracksToDeviceMusicDirectory(
+          trackIds = targetIds,
+          config = config,
+          onProgress = { progress ->
+            _roomStorageExportState.value = _roomStorageExportState.value.copy(
+              exportedCount = progress.exportedCount,
+              totalCount = progress.totalCount,
+              currentTrackTitle = progress.currentTrackTitle,
+            )
+          },
+        )
+        val sizeLabel = com.example.audio.RoomTracksStorageExporter.formatTotalSizeLabel(result.totalBytes)
+        val plural = if (result.exportedCount == 1) "track" else "tracks"
+        val failSuffix = if (result.failedCount > 0) " (${result.failedCount} failed)" else ""
+        _roomStorageExportState.value = _roomStorageExportState.value.copy(
+          isExporting = false,
+          exportedCount = result.exportedCount,
+          totalCount = result.exportedCount,
+          statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
+          errorMessage = null,
+        )
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Room tracks MediaStore export failed", e)
+        _roomStorageExportState.value = _roomStorageExportState.value.copy(
+          isExporting = false,
+          errorMessage = e.localizedMessage ?: "Failed to export Room tracks to device storage.",
+        )
+      }
+    }
+  }
+
+  fun exportPendingRoomTracksToDirectoryTree(treeUri: Uri) {
+    if (_roomStorageExportState.value.isExporting) return
+    val targetIds = pendingRoomExportTrackIds
+    pendingRoomExportTrackIds = null
+    val format = _roomStorageExportState.value.format
+
+    viewModelScope.launch {
+      _roomStorageExportState.value = _roomStorageExportState.value.copy(
+        isExporting = true,
+        exportedCount = 0,
+        totalCount = 0,
+        currentTrackTitle = "",
+        statusMessage = null,
+        errorMessage = null,
+      )
+      try {
+        val config = AudioExportConfig(
+          format = format,
+          bitrateKbps = 192,
+          normalizeOutputGain = _autoPostGainEnabled.value,
+          targetOutputLufs = _loudnessTarget.value.lufs,
+        )
+        val result = repository.exportRoomTracksToStorageTreeUri(
+          treeUri = treeUri,
+          trackIds = targetIds,
+          config = config,
+          onProgress = { progress ->
+            _roomStorageExportState.value = _roomStorageExportState.value.copy(
+              exportedCount = progress.exportedCount,
+              totalCount = progress.totalCount,
+              currentTrackTitle = progress.currentTrackTitle,
+            )
+          },
+        )
+        val sizeLabel = com.example.audio.RoomTracksStorageExporter.formatTotalSizeLabel(result.totalBytes)
+        val plural = if (result.exportedCount == 1) "track" else "tracks"
+        val failSuffix = if (result.failedCount > 0) " (${result.failedCount} failed)" else ""
+        _roomStorageExportState.value = _roomStorageExportState.value.copy(
+          isExporting = false,
+          exportedCount = result.exportedCount,
+          totalCount = result.exportedCount,
+          statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
+          errorMessage = null,
+        )
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        android.util.Log.e("SonicForgeViewModel", "Room tracks SAF directory export failed", e)
+        _roomStorageExportState.value = _roomStorageExportState.value.copy(
+          isExporting = false,
+          errorMessage = e.localizedMessage ?: "Failed to export Room tracks to selected directory.",
+        )
+      }
+    }
+  }
+
+  fun exportHistoryItemToDeviceStorage(
+    item: TrackHistoryItem,
+    onRequireDirectoryPicker: () -> Unit = {},
+  ) {
+    exportRoomTracksToDeviceMusic(
+      trackIds = setOf(item.trackId),
+      onRequireDirectoryPicker = onRequireDirectoryPicker,
+    )
   }
 
   override fun onCleared() {

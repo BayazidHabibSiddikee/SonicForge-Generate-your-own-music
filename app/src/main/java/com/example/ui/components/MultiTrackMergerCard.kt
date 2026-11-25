@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.SaveAlt
@@ -33,6 +36,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,7 +67,10 @@ fun MultiTrackMergerCard(
   modifier: Modifier = Modifier,
 ) {
   val colorScheme = MaterialTheme.colorScheme
-  val canMerge = state.selectedTrackIds.count { id -> allTracks.any { it.id == id } } >= 2
+  val selectedCount = state.selectedTrackIds.count { id -> allTracks.any { it.id == id } }
+  val canMerge = selectedCount >= 2
+  var expanded by remember { mutableStateOf(false) }
+  val isExpanded = expanded || state.isMerging
 
   Surface(
     modifier = modifier
@@ -68,7 +78,7 @@ fun MultiTrackMergerCard(
       .testTag("multi_track_merger_card"),
     shape = MaterialTheme.shapes.large,
     color = colorScheme.surfaceContainer,
-    tonalElevation = 4.dp,
+    tonalElevation = 2.dp,
     border = BorderStroke(1.dp, colorScheme.outlineVariant),
   ) {
     Column(
@@ -78,14 +88,19 @@ fun MultiTrackMergerCard(
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .minimumInteractiveComponentSize()
+          .clip(MaterialTheme.shapes.medium)
+          .clickable { expanded = !expanded }
+          .testTag("merger_expand_toggle"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Row(
           modifier = Modifier.weight(1f),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           Icon(
             imageVector = Icons.Rounded.Layers,
@@ -96,19 +111,50 @@ fun MultiTrackMergerCard(
           Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(
               text = stringResource(R.string.merger_title),
-              style = MaterialTheme.typography.titleMedium,
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.SemiBold,
               color = colorScheme.onSurface,
             )
             Text(
-              text = stringResource(R.string.merger_subtitle),
+              text = if (isExpanded) {
+                stringResource(R.string.merger_subtitle)
+              } else {
+                stringResource(R.string.merger_collapsed_hint)
+              },
               style = MaterialTheme.typography.labelSmall,
               color = colorScheme.onSurfaceVariant,
-              maxLines = 2,
+              maxLines = 1,
               overflow = TextOverflow.Ellipsis,
             )
           }
         }
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          if (selectedCount > 0) {
+            Surface(
+              shape = RoundedCornerShape(999.dp),
+              color = colorScheme.primaryContainer,
+            ) {
+              Text(
+                text = stringResource(R.string.merger_selected_badge, selectedCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+              )
+            }
+          }
+          Icon(
+            imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            tint = colorScheme.onSurfaceVariant,
+          )
+        }
       }
+
+      AnimatedVisibility(visible = isExpanded) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -315,6 +361,8 @@ fun MultiTrackMergerCard(
           Spacer(modifier = Modifier.width(6.dp))
           Text(stringResource(R.string.merger_merge_mp3_button), style = MaterialTheme.typography.labelMedium)
         }
+      }
+      }
       }
     }
   }

@@ -4517,5 +4517,204 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("drum_clear_pads_button").performScrollTo().performClick()
     assertTrue(clearedDrumTake)
   }
+
+  @Test
+  fun `gemini json parser offline arranger and offline music library produce valid plans and audio`() = runBlocking {
+    val structuredJson = """
+      {
+        "title": "Rainy Neon Rhodes",
+        "summary": "Warm late-night Rhodes chords over fingerpicked acoustic guitar and dusty boom-bap drums.",
+        "genre": "Lo-Fi Chillhop",
+        "musicalKey": "A Minor",
+        "bpm": 88,
+        "pianoVoice": "rhodes_ep",
+        "pianoProgression": "lofi_sevenths",
+        "guitarVoice": "classical_nylon",
+        "guitarChords": ["a_min", "f_maj", "c_maj", "e_min"],
+        "guitarStrumStyle": "fingerstyle_arp",
+        "drumKit": "lofi_vinyl",
+        "drumPreset": "lofi_boom_bap",
+        "reverbPreset": "STUDIO",
+        "pianoGain": 0.95,
+        "guitarGain": 0.80,
+        "drumGain": 0.92,
+        "sampleGain": 0.60,
+        "suggestedSampleQueries": ["vinyl crackle", "midnight rain", "rhodes chords"]
+      }
+    """.trimIndent()
+
+    val plan = com.example.ai.GeminiMusicArranger.parseArrangementJson(
+      jsonText = structuredJson,
+      sourcePrompt = "Rainy midnight lo-fi study beat",
+    )
+    assertEquals("Rainy Neon Rhodes", plan.title)
+    assertEquals(88, plan.bpm)
+    assertEquals(com.example.audio.PianoVoice.RHODES_EP, plan.pianoVoice)
+    assertEquals(com.example.audio.GuitarVoice.CLASSICAL_NYLON, plan.guitarVoice)
+    assertEquals(4, plan.guitarChords.size)
+    assertEquals(com.example.audio.GuitarStrumStyle.FINGERSTYLE_ARP, plan.guitarStrumStyle)
+    assertEquals(com.example.audio.ReverbPreset.STUDIO, plan.reverbPreset)
+    assertEquals(3, plan.suggestedSampleQueries.size)
+    assertEquals("vinyl crackle", plan.suggestedSampleQueries.first())
+
+    // Offline on-device arranger produces coordinated plan without network or API keys
+    val offlineArranger = com.example.ai.OfflineMusicArranger()
+    val offlinePlan = offlineArranger.generateArrangement("Neon 80s synthwave driving beat 118 bpm")
+    assertEquals("Offline Model", offlinePlan.engineLabel)
+    assertEquals(118, offlinePlan.bpm)
+    assertEquals("Synthwave", offlinePlan.genre)
+    assertTrue(offlinePlan.suggestedSampleQueries.isNotEmpty())
+
+    // Built-in offline library searches & synthesizes non-empty PCM audio
+    val vinylMatches = com.example.audio.OfflineMusicLibrary.search("vinyl crackle")
+    assertTrue(vinylMatches.isNotEmpty())
+    assertEquals("tex_vinyl_crackle", vinylMatches.first().id)
+    val pcm = com.example.audio.OfflineMusicSynthesizerDsp.renderAssetPcm(vinylMatches.first())
+    assertTrue(pcm.size > 44100)
+  }
+
+  @Test
+  fun `ai producer and built-in offline music library card switches engine arranges and triggers preview and import`() {
+    val samplePlan = com.example.ai.MusicArrangementPlan(
+      title = "Golden Hour Acoustic",
+      summary = "Warm dreadnought strums paired with bright piano chords and live studio drums.",
+      genre = "Indie Folk",
+      musicalKey = "G Major",
+      bpm = 104,
+      pianoVoice = com.example.audio.PianoVoice.CONCERT_GRAND,
+      pianoProgression = com.example.audio.PianoProgressionPreset.POP_CLASSIC,
+      guitarVoice = com.example.audio.GuitarVoice.ACOUSTIC_STEEL,
+      guitarChords = listOf(
+        com.example.audio.GuitarChordShape.G_MAJ,
+        com.example.audio.GuitarChordShape.C_ADD9,
+        com.example.audio.GuitarChordShape.E_MIN,
+        com.example.audio.GuitarChordShape.D_MIN,
+      ),
+      guitarStrumStyle = com.example.audio.GuitarStrumStyle.ACOUSTIC_STRUM,
+      drumKit = com.example.audio.DrumKitPreset.STUDIO_ACOUSTIC,
+      drumPreset = com.example.audio.SequencerPreset.FOUR_ON_FLOOR,
+      reverbPreset = com.example.audio.ReverbPreset.STUDIO,
+      pianoGain = 0.9f,
+      guitarGain = 0.9f,
+      drumGain = 0.95f,
+      sampleGain = 0.65f,
+      suggestedSampleQueries = listOf("shaker tambourine", "vinyl crackle"),
+      sourcePrompt = "Golden hour acoustic folk",
+      engineLabel = "Offline Model",
+    )
+    val offlineAsset = com.example.audio.OfflineMusicLibrary.allAssets.first()
+
+    val aiState = androidx.compose.runtime.mutableStateOf(com.example.ui.AiProducerState())
+    val libState = androidx.compose.runtime.mutableStateOf(
+      com.example.ui.OfflineMusicStudioState(items = listOf(offlineAsset)),
+    )
+    var renderedFullMix = false
+    var appliedToInstruments = false
+    var filteredQuery: String? = null
+    var previewedAssetId: String? = null
+    var importedAssetId: String? = null
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        androidx.compose.foundation.layout.Column(
+          modifier = androidx.compose.ui.Modifier.verticalScroll(
+            androidx.compose.foundation.rememberScrollState(),
+          ),
+        ) {
+          com.example.ui.components.AiProducerAndSamplesCard(
+            aiState = aiState.value,
+            offlineMusicState = libState.value,
+            onSelectAiEngine = { aiState.value = aiState.value.copy(selectedEngine = it) },
+            onAiPromptChanged = { aiState.value = aiState.value.copy(promptInput = it) },
+            onArrangeTrack = {
+              aiState.value = aiState.value.copy(currentPlan = samplePlan)
+            },
+            onRenderAiFullMix = { renderedFullMix = true },
+            onApplyPlanToInstruments = { appliedToInstruments = true },
+            onDetachSampleFromAiMix = {
+              aiState.value = aiState.value.copy(attachedSampleTrackId = null, attachedSampleTitle = null)
+            },
+            onOfflineQueryChanged = {
+              filteredQuery = it
+              libState.value = libState.value.copy(searchQuery = it)
+            },
+            onSelectOfflineCategory = { libState.value = libState.value.copy(selectedCategory = it) },
+            onPreviewOfflineAsset = { previewedAssetId = it.id },
+            onImportOfflineAsset = {
+              importedAssetId = it.id
+              libState.value = libState.value.copy(importedAssetIds = setOf(it.id))
+            },
+          )
+        }
+      }
+    }
+
+    composeTestRule.onNodeWithTag("ai_producer_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("ai_engine_offline_model").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("ai_engine_gemini_cloud").performClick()
+    assertEquals(com.example.ai.AiProducerEngine.GEMINI_CLOUD, aiState.value.selectedEngine)
+    composeTestRule.onNodeWithTag("ai_engine_offline_model").performClick()
+    assertEquals(com.example.ai.AiProducerEngine.OFFLINE_MODEL, aiState.value.selectedEngine)
+    composeTestRule.onNodeWithTag("ai_arrange_button").assertIsNotEnabled()
+
+    // Tap preset -> Arrange -> Blueprint renders
+    composeTestRule.onNodeWithTag("ai_producer_preset_0").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("ai_arrange_button").assertIsEnabled().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("ai_arrangement_plan_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("ai_render_full_mix_button").performScrollTo().performClick()
+    assertTrue(renderedFullMix)
+
+    composeTestRule.onNodeWithTag("ai_apply_to_instruments_button").performScrollTo().performClick()
+    assertTrue(appliedToInstruments)
+
+    // Tap suggested offline layer chip
+    composeTestRule.onNodeWithTag("ai_sample_query_0").performScrollTo().performClick()
+    assertEquals("shaker tambourine", filteredQuery)
+
+    // Preview & Import built-in offline asset
+    composeTestRule.onNodeWithTag("offline_music_library_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("offline_preview_${offlineAsset.id}").performScrollTo().performClick()
+    assertEquals(offlineAsset.id, previewedAssetId)
+
+    composeTestRule.onNodeWithTag("offline_import_${offlineAsset.id}").performScrollTo().performClick()
+    assertEquals(offlineAsset.id, importedAssetId)
+  }
+
+  @Test
+  fun `room storage export card switches format and triggers music and folder directory export`() {
+    val exportState = androidx.compose.runtime.mutableStateOf(com.example.ui.RoomStorageExportState())
+    var exportedToMusic = false
+    var choseDirectory = false
+
+    composeTestRule.setContent {
+      SonicForgeTheme {
+        com.example.ui.components.RoomStorageExportCard(
+          state = exportState.value,
+          roomTrackCount = 3,
+          onSelectFormat = { exportState.value = exportState.value.copy(format = it) },
+          onExportToDeviceMusic = { exportedToMusic = true },
+          onChooseStorageDirectory = { choseDirectory = true },
+          onDismissStatus = {
+            exportState.value = exportState.value.copy(statusMessage = null, errorMessage = null)
+          },
+        )
+      }
+    }
+
+    composeTestRule.onNodeWithTag("room_storage_export_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("room_export_format_wav").performClick()
+    assertEquals(com.example.audio.AudioExportFormat.WAV, exportState.value.format)
+
+    composeTestRule.onNodeWithTag("room_export_to_music_button").assertIsEnabled().performClick()
+    assertTrue(exportedToMusic)
+
+    composeTestRule.onNodeWithTag("room_export_choose_folder_button").assertIsEnabled().performClick()
+    assertTrue(choseDirectory)
+  }
 }
+
+
 

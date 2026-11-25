@@ -3,10 +3,43 @@ package com.example.audio
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.ln
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
+
+enum class ThreeBandEqBand(
+  val id: String,
+  val label: String,
+  val frequencyRangeLabel: String,
+  val centerHz: Int,
+  val bandIndices: IntRange,
+) {
+  LOW(
+    id = "low",
+    label = "Low",
+    frequencyRangeLabel = "60–310 Hz",
+    centerHz = 120,
+    bandIndices = 0..2,
+  ),
+  MID(
+    id = "mid",
+    label = "Mid",
+    frequencyRangeLabel = "600 Hz–3 kHz",
+    centerHz = 1000,
+    bandIndices = 3..5,
+  ),
+  HIGH(
+    id = "high",
+    label = "High",
+    frequencyRangeLabel = "6–12 kHz",
+    centerHz = 8000,
+    bandIndices = 6..7,
+  ),
+}
 
 enum class EqPreset(
   val label: String,
@@ -62,6 +95,29 @@ data class EqualizerSettings(
   val isActive: Boolean
     get() = isEnabled && normalizedBands.any { abs(it) >= 0.1f }
 
+  val lowGainDb: Float
+    get() = threeBandGain(ThreeBandEqBand.LOW)
+
+  val midGainDb: Float
+    get() = threeBandGain(ThreeBandEqBand.MID)
+
+  val highGainDb: Float
+    get() = threeBandGain(ThreeBandEqBand.HIGH)
+
+  fun threeBandGain(band: ThreeBandEqBand): Float {
+    val bands = normalizedBands
+    var sum = 0f
+    var count = 0
+    for (idx in band.bandIndices) {
+      sum += bands[idx]
+      count++
+    }
+    if (count == 0) return 0f
+    val avg = sum / count.toFloat()
+    return ((avg * 10f).roundToInt() / 10f)
+      .coerceIn(GraphicEqualizerDsp.MIN_GAIN_DB, GraphicEqualizerDsp.MAX_GAIN_DB)
+  }
+
   fun withPreset(targetPreset: EqPreset): EqualizerSettings {
     if (targetPreset == EqPreset.FLAT) {
       return EqualizerSettings(
@@ -94,12 +150,40 @@ data class EqualizerSettings(
       bandGainsDb = updated,
     )
   }
+
+  fun withThreeBandGain(band: ThreeBandEqBand, gainDb: Float): EqualizerSettings {
+    val updated = normalizedBands.toMutableList()
+    val snapped = ((gainDb * 2f).roundToInt() / 2f)
+      .coerceIn(GraphicEqualizerDsp.MIN_GAIN_DB, GraphicEqualizerDsp.MAX_GAIN_DB)
+    for (idx in band.bandIndices) {
+      updated[idx] = snapped
+    }
+
+    val matchedPreset = EqPreset.selectablePresets.firstOrNull { candidate ->
+      candidate.defaultBandsDb.indices.all { i -> abs(candidate.defaultBandsDb[i] - updated[i]) < 0.15f }
+    } ?: EqPreset.CUSTOM
+
+    val hasBoostOrCut = updated.any { abs(it) >= 0.1f }
+    return EqualizerSettings(
+      isEnabled = hasBoostOrCut || isEnabled,
+      preset = matchedPreset,
+      bandGainsDb = updated,
+    )
+  }
+
+  fun withThreeBandGains(lowDb: Float, midDb: Float, highDb: Float): EqualizerSettings {
+    return this
+      .withThreeBandGain(ThreeBandEqBand.LOW, lowDb)
+      .withThreeBandGain(ThreeBandEqBand.MID, midDb)
+      .withThreeBandGain(ThreeBandEqBand.HIGH, highDb)
+  }
 }
 
 /**
- * 8-band real-time biquad peaking graphic equalizer DSP.
- * Uses cascaded Robert Bristow-Johnson Audio EQ Cookbook peaking filters at standard ISO
- * frequencies (60 Hz .. 12 kHz) with zero-allocation Transposed Direct Form II processing.
+ * Real-time biquad peaking graphic equalizer DSP supporting both 3-band (Low, Mid, High)
+ * and 8-band ISO (60 Hz .. 12 kHz) controls.
+ * Uses cascaded Robert Bristow-Johnson Audio EQ Cookbook peaking filters with zero-allocation
+ * Transposed Direct Form II processing.
  */
 object GraphicEqualizerDsp {
 
@@ -107,6 +191,10 @@ object GraphicEqualizerDsp {
   const val MIN_GAIN_DB = -12f
   const val MAX_GAIN_DB = 12f
   const val DEFAULT_Q = 1.41421356
+
+  private const val CURVE_MIN_HZ = 30.0
+  private const val CURVE_MAX_HZ = 16_000.0
+  private const val CURVE_REF_SAMPLE_RATE = 44_100.0
 
   val CENTER_FREQUENCIES_HZ: IntArray = intArrayOf(
     60, 170, 310, 600, 1000, 3000, 6000, 12000,
@@ -126,9 +214,99 @@ object GraphicEqualizerDsp {
     }
   }
 
+  fun formatThreeBandSummary(settings: EqualizerSettings): String {
+    if (!settings.isEnabled) return "Bypass"
+    if (!settings.isActive) return "Flat (0 dB)"
+    if (settings.preset != EqPreset.CUSTOM && settings.preset != EqPreset.FLAT) {
+      return settings.preset.label
+    }
+    val low = formatGainDb(settings.lowGainDb)
+    val mid = formatGainDb(settings.midGainDb)
+    val high = formatGainDb(settings.highGainDb)
+    return "L $low · M $mid · H $high dB"
+  }
+
   fun formatGainDb(gainDb: Float): String {
     val clean = if (abs(gainDb) < 0.05f) 0f else gainDb
     return if (clean > 0f) "+%.1f".format(clean) else "%.1f".format(clean)
+  }
+
+  /**
+   * Computes normalized [-1f, +1f] frequency-response curve samples across log-spaced frequencies
+   * from 30 Hz to 16 kHz by evaluating the exact cascaded biquad magnitude response |H(e^jw)|.
+   */
+  fun computeFrequencyCurvePoints(
+    settings: EqualizerSettings,
+    samplePoints: Int = 48,
+  ): List<Float> {
+    val count = samplePoints.coerceAtLeast(8)
+    if (!settings.isActive) {
+      return List(count) { 0f }
+    }
+
+    val bands = settings.normalizedBands
+    val b0 = DoubleArray(BAND_COUNT) { 1.0 }
+    val b1 = DoubleArray(BAND_COUNT)
+    val b2 = DoubleArray(BAND_COUNT)
+    val a1 = DoubleArray(BAND_COUNT)
+    val a2 = DoubleArray(BAND_COUNT)
+    val active = BooleanArray(BAND_COUNT)
+
+    for (band in 0 until BAND_COUNT) {
+      val gainDb = bands[band]
+      if (abs(gainDb) < 0.08f) continue
+      val fc = CENTER_FREQUENCIES_HZ[band].toDouble()
+      val aAmp = 10.0.pow(gainDb / 40.0)
+      val w0 = 2.0 * PI * fc / CURVE_REF_SAMPLE_RATE
+      val cosW0 = cos(w0)
+      val sinW0 = sin(w0)
+      val alpha = sinW0 / (2.0 * DEFAULT_Q)
+
+      val rawA0 = max(1e-6, 1.0 + alpha / aAmp)
+      b0[band] = (1.0 + alpha * aAmp) / rawA0
+      b1[band] = (-2.0 * cosW0) / rawA0
+      b2[band] = (1.0 - alpha * aAmp) / rawA0
+      a1[band] = (-2.0 * cosW0) / rawA0
+      a2[band] = (1.0 - alpha / aAmp) / rawA0
+      active[band] = true
+    }
+
+    val logMin = ln(CURVE_MIN_HZ)
+    val logSpan = ln(CURVE_MAX_HZ) - logMin
+    return List(count) { idx ->
+      val t = idx.toDouble() / (count - 1).toDouble()
+      val freqHz = kotlin.math.exp(logMin + logSpan * t)
+      val w = 2.0 * PI * freqHz / CURVE_REF_SAMPLE_RATE
+      val cosW = cos(w)
+      val sinW = sin(w)
+      val cos2W = cos(2.0 * w)
+      val sin2W = sin(2.0 * w)
+
+      var totalMag = 1.0
+      for (band in 0 until BAND_COUNT) {
+        if (!active[band]) continue
+        val numRe = b0[band] + b1[band] * cosW + b2[band] * cos2W
+        val numIm = -(b1[band] * sinW + b2[band] * sin2W)
+        val denRe = 1.0 + a1[band] * cosW + a2[band] * cos2W
+        val denIm = -(a1[band] * sinW + a2[band] * sin2W)
+        val numMag = sqrt(numRe * numRe + numIm * numIm)
+        val denMag = max(1e-9, sqrt(denRe * denRe + denIm * denIm))
+        totalMag *= (numMag / denMag)
+      }
+      val db = 20.0 * log10(max(1e-6, totalMag))
+      (db / MAX_GAIN_DB.toDouble()).toFloat().coerceIn(-1f, 1f)
+    }
+  }
+
+  /**
+   * Maps a frequency in Hz to normalized horizontal [0f, 1f] position matching
+   * [computeFrequencyCurvePoints].
+   */
+  fun frequencyToCurveX(freqHz: Int): Float {
+    val clamped = freqHz.toDouble().coerceIn(CURVE_MIN_HZ, CURVE_MAX_HZ)
+    val logMin = ln(CURVE_MIN_HZ)
+    val logSpan = ln(CURVE_MAX_HZ) - logMin
+    return ((ln(clamped) - logMin) / logSpan).toFloat().coerceIn(0f, 1f)
   }
 
   fun processPcmOffline(
@@ -277,8 +455,8 @@ class RealTimeGraphicEqualizer(
           if (!bandActive[band]) continue
           val stateIdx = band * channels + c
           val out = b0[band] * sample + z1[stateIdx]
-          z1[stateIdx] = b1[band] * sample - a1[stateIdx] * out + z2[stateIdx]
-          z2[stateIdx] = b2[band] * sample - a2[stateIdx] * out
+          z1[stateIdx] = b1[band] * sample - a1[band] * out + z2[stateIdx]
+          z2[stateIdx] = b2[band] * sample - a2[band] * out
           sample = out
         }
         val scaled = (sample * 32768.0 * volumeGain)

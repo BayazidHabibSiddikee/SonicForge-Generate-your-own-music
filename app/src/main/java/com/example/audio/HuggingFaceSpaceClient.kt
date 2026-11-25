@@ -148,8 +148,8 @@ class HuggingFaceSpaceClient {
         }
       }
 
-      if (errorDataLine != null) {
-        val parsedErr = parseGradioError(errorDataLine!!)
+      errorDataLine?.let { rawError ->
+        val parsedErr = parseGradioError(rawError)
         throw IllegalStateException("Space ${space.spaceId} failed: $parsedErr")
       }
 

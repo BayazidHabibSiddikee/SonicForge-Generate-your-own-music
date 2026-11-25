@@ -41,22 +41,18 @@ class PlaybackForegroundService : Service() {
       ACTION_PREVIOUS -> controller.skipPrevious()
       ACTION_NEXT -> controller.skipNext()
       ACTION_STOP -> {
+        // Ensure foreground contract is satisfied if started via startForegroundService before stopping
+        startForegroundSafely(buildNotification(controller))
         controller.stopPlayback()
         stopForegroundAndSelf()
         return START_NOT_STICKY
       }
     }
 
-    val notification = buildNotification(controller)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      ServiceCompat.startForeground(
-        this,
-        NOTIFICATION_ID,
-        notification,
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-      )
-    } else {
-      startForeground(NOTIFICATION_ID, notification)
+    val startedForeground = startForegroundSafely(buildNotification(controller))
+    if (!startedForeground) {
+      stopForegroundAndSelf()
+      return START_NOT_STICKY
     }
 
     if (controller.state.value.isPlaying) {
@@ -66,6 +62,25 @@ class PlaybackForegroundService : Service() {
     }
 
     return START_STICKY
+  }
+
+  private fun startForegroundSafely(notification: Notification): Boolean {
+    return try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        ServiceCompat.startForeground(
+          this,
+          NOTIFICATION_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+        )
+      } else {
+        startForeground(NOTIFICATION_ID, notification)
+      }
+      true
+    } catch (e: Exception) {
+      Log.w(TAG, "Unable to enter foreground media playback state", e)
+      false
+    }
   }
 
   override fun onDestroy() {

@@ -17,6 +17,8 @@ import com.example.audio.AudioPlayerController
 import com.example.audio.DrumKitPreset
 import com.example.audio.DrumPadVoice
 import com.example.audio.EqPreset
+import com.example.audio.ThreeBandEqBand
+import com.example.audio.TrackLoopMode
 import com.example.audio.GuitarChordShape
 import com.example.audio.GuitarStrumStyle
 import com.example.audio.GuitarVoice
@@ -1180,6 +1182,8 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
         _activeBufferDiagnostics.value = result.diagnostics
         _latestAutoTagResult.value = result.autoTagResult
         playerController.loadTrack(result.track, autoPlay = true)
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         _errorMessage.value = e.localizedMessage ?: "Failed to generate audio track."
       } finally {
@@ -1202,6 +1206,8 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
         _selectedPlaylistId.value = null
         playerController.loadTrack(imported, autoPlay = true)
         refreshBufferDiagnostics(imported)
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         _errorMessage.value = e.localizedMessage ?: "Failed to import selected audio file."
       }
@@ -1295,6 +1301,7 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
 
   fun stopTrack() {
     studioClipEngine.stop()
+    _offlineMusicState.update { it.copy(previewingAssetId = null) }
     playerController.stopPlayback()
   }
 
@@ -1395,6 +1402,10 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
 
   fun setEqualizerBandGain(bandIndex: Int, gainDb: Float) {
     playerController.setEqualizerBandGain(bandIndex, gainDb)
+  }
+
+  fun setThreeBandEqualizerGain(band: ThreeBandEqBand, gainDb: Float) {
+    playerController.setThreeBandEqualizerGain(band, gainDb)
   }
 
   fun resetEqualizer() {
@@ -1691,6 +1702,30 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
 
   fun toggleLoop() {
     playerController.toggleLoop()
+  }
+
+  fun setLoopMode(mode: TrackLoopMode) {
+    playerController.setLoopMode(mode)
+  }
+
+  fun setLoopSelectionRange(startFraction: Float, endFraction: Float) {
+    playerController.setLoopSelectionRange(
+      startFraction = startFraction,
+      endFraction = endFraction,
+      autoEnableSelectionMode = true,
+    )
+  }
+
+  fun setLoopSelectionStartAtCurrentPosition() {
+    playerController.setLoopSelectionStartAtCurrentPosition()
+  }
+
+  fun setLoopSelectionEndAtCurrentPosition() {
+    playerController.setLoopSelectionEndAtCurrentPosition()
+  }
+
+  fun resetLoopSelection() {
+    playerController.resetLoopSelection()
   }
 
   fun toggleSequencerStep(lane: SequencerLane, stepIndex: Int) {
@@ -3118,8 +3153,12 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
           title = asset.title,
           looping = false,
           onCompleted = {
-            if (_offlineMusicState.value.previewingAssetId == asset.id) {
-              _offlineMusicState.value = _offlineMusicState.value.copy(previewingAssetId = null)
+            _offlineMusicState.update { current ->
+              if (current.previewingAssetId == asset.id) {
+                current.copy(previewingAssetId = null)
+              } else {
+                current
+              }
             }
           },
         )
@@ -3227,14 +3266,16 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
 
     val format = _roomStorageExportState.value.format
     viewModelScope.launch {
-      _roomStorageExportState.value = _roomStorageExportState.value.copy(
-        isExporting = true,
-        exportedCount = 0,
-        totalCount = 0,
-        currentTrackTitle = "",
-        statusMessage = null,
-        errorMessage = null,
-      )
+      _roomStorageExportState.update {
+        it.copy(
+          isExporting = true,
+          exportedCount = 0,
+          totalCount = 0,
+          currentTrackTitle = "",
+          statusMessage = null,
+          errorMessage = null,
+        )
+      }
       try {
         val config = AudioExportConfig(
           format = format,
@@ -3246,31 +3287,49 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
           trackIds = targetIds,
           config = config,
           onProgress = { progress ->
-            _roomStorageExportState.value = _roomStorageExportState.value.copy(
-              exportedCount = progress.exportedCount,
-              totalCount = progress.totalCount,
-              currentTrackTitle = progress.currentTrackTitle,
-            )
+            _roomStorageExportState.update {
+              it.copy(
+                exportedCount = progress.exportedCount,
+                totalCount = progress.totalCount,
+                currentTrackTitle = progress.currentTrackTitle,
+              )
+            }
           },
         )
         val sizeLabel = com.example.audio.RoomTracksStorageExporter.formatTotalSizeLabel(result.totalBytes)
         val plural = if (result.exportedCount == 1) "track" else "tracks"
         val failSuffix = if (result.failedCount > 0) " (${result.failedCount} failed)" else ""
-        _roomStorageExportState.value = _roomStorageExportState.value.copy(
-          isExporting = false,
-          exportedCount = result.exportedCount,
-          totalCount = result.exportedCount,
-          statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
-          errorMessage = null,
-        )
+        if (result.exportedCount == 0 && result.failedCount > 0) {
+          _roomStorageExportState.update {
+            it.copy(
+              isExporting = false,
+              exportedCount = 0,
+              totalCount = result.failedCount,
+              statusMessage = null,
+              errorMessage = "Could not export ${result.failedCount} tracks to ${result.directoryLabel}.",
+            )
+          }
+        } else {
+          _roomStorageExportState.update {
+            it.copy(
+              isExporting = false,
+              exportedCount = result.exportedCount,
+              totalCount = result.exportedCount,
+              statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
+              errorMessage = null,
+            )
+          }
+        }
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
         android.util.Log.e("SonicForgeViewModel", "Room tracks MediaStore export failed", e)
-        _roomStorageExportState.value = _roomStorageExportState.value.copy(
-          isExporting = false,
-          errorMessage = e.localizedMessage ?: "Failed to export Room tracks to device storage.",
-        )
+        _roomStorageExportState.update {
+          it.copy(
+            isExporting = false,
+            errorMessage = e.localizedMessage ?: "Failed to export Room tracks to device storage.",
+          )
+        }
       }
     }
   }
@@ -3282,14 +3341,16 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
     val format = _roomStorageExportState.value.format
 
     viewModelScope.launch {
-      _roomStorageExportState.value = _roomStorageExportState.value.copy(
-        isExporting = true,
-        exportedCount = 0,
-        totalCount = 0,
-        currentTrackTitle = "",
-        statusMessage = null,
-        errorMessage = null,
-      )
+      _roomStorageExportState.update {
+        it.copy(
+          isExporting = true,
+          exportedCount = 0,
+          totalCount = 0,
+          currentTrackTitle = "",
+          statusMessage = null,
+          errorMessage = null,
+        )
+      }
       try {
         val config = AudioExportConfig(
           format = format,
@@ -3302,31 +3363,49 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
           trackIds = targetIds,
           config = config,
           onProgress = { progress ->
-            _roomStorageExportState.value = _roomStorageExportState.value.copy(
-              exportedCount = progress.exportedCount,
-              totalCount = progress.totalCount,
-              currentTrackTitle = progress.currentTrackTitle,
-            )
+            _roomStorageExportState.update {
+              it.copy(
+                exportedCount = progress.exportedCount,
+                totalCount = progress.totalCount,
+                currentTrackTitle = progress.currentTrackTitle,
+              )
+            }
           },
         )
         val sizeLabel = com.example.audio.RoomTracksStorageExporter.formatTotalSizeLabel(result.totalBytes)
         val plural = if (result.exportedCount == 1) "track" else "tracks"
         val failSuffix = if (result.failedCount > 0) " (${result.failedCount} failed)" else ""
-        _roomStorageExportState.value = _roomStorageExportState.value.copy(
-          isExporting = false,
-          exportedCount = result.exportedCount,
-          totalCount = result.exportedCount,
-          statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
-          errorMessage = null,
-        )
+        if (result.exportedCount == 0 && result.failedCount > 0) {
+          _roomStorageExportState.update {
+            it.copy(
+              isExporting = false,
+              exportedCount = 0,
+              totalCount = result.failedCount,
+              statusMessage = null,
+              errorMessage = "Could not export ${result.failedCount} tracks to ${result.directoryLabel}.",
+            )
+          }
+        } else {
+          _roomStorageExportState.update {
+            it.copy(
+              isExporting = false,
+              exportedCount = result.exportedCount,
+              totalCount = result.exportedCount,
+              statusMessage = "Exported ${result.exportedCount} $plural (${result.format.displayName} · $sizeLabel) to ${result.directoryLabel}$failSuffix",
+              errorMessage = null,
+            )
+          }
+        }
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
         android.util.Log.e("SonicForgeViewModel", "Room tracks SAF directory export failed", e)
-        _roomStorageExportState.value = _roomStorageExportState.value.copy(
-          isExporting = false,
-          errorMessage = e.localizedMessage ?: "Failed to export Room tracks to selected directory.",
-        )
+        _roomStorageExportState.update {
+          it.copy(
+            isExporting = false,
+            errorMessage = e.localizedMessage ?: "Failed to export Room tracks to selected directory.",
+          )
+        }
       }
     }
   }
@@ -3342,8 +3421,8 @@ class SonicForgeViewModel(application: Application) : AndroidViewModel(applicati
   }
 
   override fun onCleared() {
-    stepSequencerEngine.stop()
-    metronomeEngine.stop()
+    stepSequencerEngine.release()
+    metronomeEngine.release()
     liveInstrumentEngine.release()
     studioClipEngine.release()
     super.onCleared()

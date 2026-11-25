@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Loop
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Replay5
@@ -103,6 +104,7 @@ import com.example.audio.ConvolutionReverbDsp
 import com.example.audio.CrossfadeDsp
 import com.example.audio.EqPreset
 import com.example.audio.GraphicEqualizerDsp
+import com.example.audio.ThreeBandEqBand
 import com.example.audio.LoudnessNormalizerDsp
 import com.example.audio.LoudnessTarget
 import com.example.audio.PitchShiftDsp
@@ -113,6 +115,7 @@ import com.example.audio.ReverbPreset
 import com.example.audio.ReverbRoomSizeOption
 import com.example.audio.RoomReverbDsp
 import com.example.audio.TrackAudioEnvelope
+import com.example.audio.TrackLoopMode
 import com.example.audio.WaveformInteractionMode
 import com.example.model.GeneratedTrack
 import com.example.ui.theme.StudioAmber
@@ -144,6 +147,11 @@ fun CustomAudioPlayer(
   onSkipPrevious: () -> Unit,
   onSkipNext: () -> Unit,
   onToggleLoop: () -> Unit,
+  onSelectLoopMode: (TrackLoopMode) -> Unit = {},
+  onLoopSelectionRangeChange: (startFraction: Float, endFraction: Float) -> Unit = { _, _ -> },
+  onSetLoopStartAtPlayhead: () -> Unit = {},
+  onSetLoopEndAtPlayhead: () -> Unit = {},
+  onResetLoopSelection: () -> Unit = {},
   onVolumeChange: (Float) -> Unit,
   onToggleMute: () -> Unit,
   onPitchChange: (Float) -> Unit = {},
@@ -160,6 +168,7 @@ fun CustomAudioPlayer(
   onEqualizerEnabledChange: (Boolean) -> Unit = {},
   onSelectEqualizerPreset: (EqPreset) -> Unit = {},
   onEqualizerBandGainChange: (bandIndex: Int, gainDb: Float) -> Unit = { _, _ -> },
+  onThreeBandEqualizerGainChange: (band: ThreeBandEqBand, gainDb: Float) -> Unit = { _, _ -> },
   onResetEqualizer: () -> Unit = {},
   loudnessTarget: LoudnessTarget = LoudnessTarget.STREAMING_14,
   autoPostGainEnabled: Boolean = true,
@@ -254,9 +263,10 @@ fun CustomAudioPlayer(
 
           if (track != null) {
             val hasLiveBpm = playbackState.liveBpm in 55..180
+            val diagBpm = bufferDiagnostics?.detectedBpm
             val displayBpm = when {
               hasLiveBpm -> playbackState.liveBpm
-              bufferDiagnostics?.detectedBpm in 55..180 -> bufferDiagnostics!!.detectedBpm
+              diagBpm != null && diagBpm in 55..180 -> diagBpm
               else -> track.bpm
             }
             val displayKey = PitchShiftDsp.transposeKeyLabel(track.musicalKey, playbackState.pitchSemitones)
@@ -360,9 +370,11 @@ fun CustomAudioPlayer(
           onPaintEnvelopePoint = onPaintEnvelopePoint,
           onMuteSegment = onMuteSegment,
           onToggleMuteTap = onToggleMuteTap,
+          loopSettings = playbackState.loopSettings,
+          onLoopSelectionRangeChange = onLoopSelectionRangeChange,
           modifier = Modifier
             .fillMaxWidth()
-            .height(if (interactionMode == WaveformInteractionMode.SCRUB) 52.dp else 76.dp)
+            .height(if (interactionMode == WaveformInteractionMode.SCRUB && !playbackState.loopSettings.isLoopSelection) 52.dp else 76.dp)
             .testTag("player_waveform"),
         )
 
@@ -455,8 +467,12 @@ fun CustomAudioPlayer(
             .testTag("player_loop_button"),
         ) {
           Icon(
-            imageVector = if (playbackState.isLooping) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-            contentDescription = stringResource(R.string.cd_toggle_loop),
+            imageVector = when (playbackState.loopSettings.mode) {
+              TrackLoopMode.LOOP_TRACK -> Icons.Rounded.RepeatOne
+              TrackLoopMode.LOOP_SELECTION -> Icons.Rounded.Loop
+              TrackLoopMode.OFF -> Icons.Rounded.Repeat
+            },
+            contentDescription = stringResource(R.string.cd_loop_mode_cycle),
             tint = if (hasTrack) loopTint else colorScheme.outline,
           )
         }
@@ -576,7 +592,28 @@ fun CustomAudioPlayer(
         }
       }
 
-      // 5. Progressive Disclosure: Audio FX & Studio Mixer Drawer (collapsed by default)
+      // 4b. Seamless Track & Selection Loop Control Card (Off | Loop Track | Loop Selection)
+      TrackLoopControlCard(
+        loopSettings = playbackState.loopSettings,
+        durationMs = durationMs,
+        enabled = hasTrack,
+        onSelectLoopMode = onSelectLoopMode,
+        onSelectionRangeChange = onLoopSelectionRangeChange,
+        onSetLoopStartAtPlayhead = onSetLoopStartAtPlayhead,
+        onSetLoopEndAtPlayhead = onSetLoopEndAtPlayhead,
+        onResetLoopSelection = onResetLoopSelection,
+      )
+
+      // 5. Dedicated 3-Band Equalizer (Low, Mid, High) directly accessible in the Audio Player Studio
+      ThreeBandEqualizerCard(
+        equalizer = playbackState.equalizer,
+        onEnabledChange = onEqualizerEnabledChange,
+        onSelectPreset = onSelectEqualizerPreset,
+        onBandGainChange = onThreeBandEqualizerGainChange,
+        onReset = onResetEqualizer,
+      )
+
+      // 6. Progressive Disclosure: Audio FX & Studio Mixer Drawer (collapsed by default)
       val activeFxSummary = buildList {
         if (abs(playbackState.pitchSemitones) >= 0.05f) {
           add(PitchShiftDsp.formatSemitoneBadge(playbackState.pitchSemitones))

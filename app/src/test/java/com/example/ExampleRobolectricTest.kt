@@ -616,6 +616,8 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_pitch_dsp_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_pitch_slider").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_pitch_up_button").performScrollTo().performClick()
@@ -736,6 +738,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_1").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_reverb_dsp_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_reverb_mix_slider").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_reverb_size_slider").performScrollTo().assertIsDisplayed()
@@ -1151,6 +1157,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_2").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_loudness_dsp_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_lufs_badge").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("lufs_target_mobile_16").performScrollTo().performClick()
@@ -1729,6 +1739,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_2").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_crossfade_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_crossfade_badge").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_crossfade_active_banner").performScrollTo().assertIsDisplayed()
@@ -1861,6 +1875,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_3").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("waveform_mode_envelope").performScrollTo().performClick()
     assertEquals(com.example.audio.WaveformInteractionMode.ENVELOPE, selectedMode)
     composeTestRule.onNodeWithTag("waveform_mode_mute").performScrollTo().performClick()
@@ -1885,6 +1903,7 @@ class ExampleRobolectricTest {
       createdAtEpochMs = 3_000L,
     )
     val showBottomState = androidx.compose.runtime.mutableStateOf(true)
+    val destinationState = androidx.compose.runtime.mutableStateOf(com.example.ui.StudioDestination.PIANO)
 
     composeTestRule.setContent {
       SonicForgeTheme {
@@ -1893,6 +1912,7 @@ class ExampleRobolectricTest {
             tracks = listOf(sampleTrack),
             allTracks = listOf(sampleTrack),
             isInitializing = false,
+            activeDestination = destinationState.value,
             showBottomWaveformBar = showBottomState.value,
             playback = AudioPlaybackState(
               currentTrackId = sampleTrack.id,
@@ -1936,6 +1956,7 @@ class ExampleRobolectricTest {
           onVolumeChange = {},
           onToggleMute = {},
           onSetBottomWaveformVisible = { showBottomState.value = it },
+          onSelectDestination = { destinationState.value = it },
         )
       }
     }
@@ -1948,8 +1969,12 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("bottom_waveform_bar").assertDoesNotExist()
 
-    // User can optionally bring it back from the header toggle
+    // User can optionally bring it back from the Studio header toggle
+    destinationState.value = com.example.ui.StudioDestination.STUDIO
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("restore_bottom_waveform_button").assertIsDisplayed().performClick()
+    composeTestRule.waitForIdle()
+    destinationState.value = com.example.ui.StudioDestination.PIANO
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("bottom_waveform_bar").assertIsDisplayed()
   }
@@ -2067,6 +2092,8 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_eq_dsp_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_eq_label").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("eq_band_slider_0").performScrollTo().assertIsDisplayed()
@@ -2912,6 +2939,10 @@ class ExampleRobolectricTest {
         }
       }
 
+      composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+      composeTestRule.waitForIdle()
+      composeTestRule.onNodeWithTag("player_fx_tab_2").performScrollTo().performClick()
+      composeTestRule.waitForIdle()
       composeTestRule.onNodeWithTag("player_loudness_dsp_card").performScrollTo().assertIsDisplayed()
       composeTestRule.onNodeWithTag("player_lufs_badge").performScrollTo().assertIsDisplayed()
       composeTestRule.onNodeWithTag("player_auto_post_gain_status").performScrollTo().assertIsDisplayed()
@@ -3054,6 +3085,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_3").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_spectrum_analyzer_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_spectrum_canvas").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("spectrum_mode_badge").performScrollTo().assertIsDisplayed()
@@ -3248,6 +3283,10 @@ class ExampleRobolectricTest {
       }
     }
 
+    composeTestRule.onNodeWithTag("player_fx_drawer_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("player_fx_tab_1").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("player_reverb_ir_badge").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("reverb_impulse_canvas").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("player_reverb_damping_slider").performScrollTo().assertIsDisplayed()
@@ -3790,6 +3829,8 @@ class ExampleRobolectricTest {
 
     composeTestRule.onNodeWithTag("studio_page_scroll")
       .performScrollToNode(hasTestTag("multi_track_merger_card"))
+    composeTestRule.onNodeWithTag("merger_expand_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("merger_auto_pick_button").performScrollTo().performClick()
     assertTrue(autoPickedBand)
     composeTestRule.onNodeWithTag("merger_merge_mp3_button").performScrollTo().performClick()
@@ -3797,6 +3838,8 @@ class ExampleRobolectricTest {
 
     composeTestRule.onNodeWithTag("studio_page_scroll")
       .performScrollToNode(hasTestTag("sound_resources_card"))
+    composeTestRule.onNodeWithTag("sound_resources_expand_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("sound_resource_btn_res_rhodes_lofi").performScrollTo().performClick()
     assertEquals(com.example.audio.StudioSoundResource.RHODES_LOFI_CHORDS, generatedResource)
 
@@ -4010,6 +4053,8 @@ class ExampleRobolectricTest {
     assertEquals("", promptState.value)
 
     // Switch API engine & type custom music prompt
+    composeTestRule.onNodeWithTag("music_prompt_mode_badge").performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("engine_chip_audioldm").performClick()
     composeTestRule.waitForIdle()
     assertEquals(com.example.ui.GenerationEngine.HF_AUDIO_LDM, engineState.value)

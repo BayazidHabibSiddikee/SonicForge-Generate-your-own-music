@@ -1148,6 +1148,7 @@ class LiveInstrumentAudioEngine(
   private var readCursor = 0
   private var activeFramesRemaining = 0
   private val mixerRunning = AtomicBoolean(false)
+  private val isReleased = AtomicBoolean(false)
   private val lastTriggerTimeMs = AtomicLong(0L)
   private var mixerJob: Job? = null
 
@@ -1176,7 +1177,7 @@ class LiveInstrumentAudioEngine(
     samples: FloatArray,
     sampleRate: Int = InstrumentSynthDsp.SAMPLE_RATE,
   ) {
-    if (samples.isEmpty()) return
+    if (isReleased.get() || samples.isEmpty()) return
     lastTriggerTimeMs.set(System.currentTimeMillis())
     val writeLen = min(samples.size, ringSize - 1)
     synchronized(ringLock) {
@@ -1212,6 +1213,7 @@ class LiveInstrumentAudioEngine(
   }
 
   fun release() {
+    isReleased.set(true)
     clearPolyphonicVoices()
     mixerJob?.cancel()
     mixerJob = null
@@ -1228,6 +1230,7 @@ class LiveInstrumentAudioEngine(
   }
 
   private fun ensurePolyphonicMixerRunning() {
+    if (isReleased.get()) return
     if (!mixerRunning.compareAndSet(false, true)) return
     mixerJob = scope.launch {
       val chunkFrames = 512
@@ -1289,8 +1292,8 @@ class LiveInstrumentAudioEngine(
         } catch (_: Exception) {
         }
         mixerRunning.set(false)
-        // If a note arrived right as we exited, spin right back up
-        val stillHasPending = synchronized(ringLock) { activeFramesRemaining > 0 }
+        // If a note arrived right as we exited (and engine is not released), spin right back up
+        val stillHasPending = !isReleased.get() && synchronized(ringLock) { activeFramesRemaining > 0 }
         if (stillHasPending) {
           ensurePolyphonicMixerRunning()
         }

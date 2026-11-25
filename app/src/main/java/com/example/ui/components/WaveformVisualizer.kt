@@ -44,7 +44,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.audio.SeamlessLoopDsp
 import com.example.audio.TrackAudioEnvelope
+import com.example.audio.TrackLoopSettings
 import com.example.audio.VolumeEnvelopeDsp
 import com.example.audio.WaveformInteractionMode
 import kotlin.math.abs
@@ -75,6 +77,8 @@ fun WaveformVisualizer(
   onPaintEnvelopePoint: (fraction: Float, gain: Float) -> Unit = { _, _ -> },
   onMuteSegment: (startFraction: Float, endFraction: Float) -> Unit = { _, _ -> },
   onToggleMuteTap: (fraction: Float) -> Unit = {},
+  loopSettings: TrackLoopSettings = TrackLoopSettings(),
+  onLoopSelectionRangeChange: (startFraction: Float, endFraction: Float) -> Unit = { _, _ -> },
 ) {
   val colorScheme = MaterialTheme.colorScheme
   val safeDurationMs = durationMs.coerceAtLeast(1L)
@@ -107,6 +111,8 @@ fun WaveformVisualizer(
   var dragFraction by remember { mutableFloatStateOf(0f) }
   var muteDragStartFraction by remember { mutableFloatStateOf(-1f) }
   var muteDragEndFraction by remember { mutableFloatStateOf(-1f) }
+  // 0 = none, 1 = dragging loop A handle, 2 = dragging loop B handle
+  var activeLoopHandle by remember { mutableStateOf(0) }
 
   val currentOnScrubStart by rememberUpdatedState(onScrubStart)
   val currentOnScrubToPosition by rememberUpdatedState(onScrubToPosition)
@@ -114,6 +120,8 @@ fun WaveformVisualizer(
   val currentOnPaintEnvelopePoint by rememberUpdatedState(onPaintEnvelopePoint)
   val currentOnMuteSegment by rememberUpdatedState(onMuteSegment)
   val currentOnToggleMuteTap by rememberUpdatedState(onToggleMuteTap)
+  val currentLoopSettings by rememberUpdatedState(loopSettings.normalized())
+  val currentOnLoopSelectionRangeChange by rememberUpdatedState(onLoopSelectionRangeChange)
 
   val effectiveProgress = if (isDragging) dragFraction else animatedProgress
   val displayPeaks = remember(peaks) {
@@ -127,10 +135,13 @@ fun WaveformVisualizer(
   val playheadColor = colorScheme.secondary
   val envelopeColor = colorScheme.tertiary
   val muteColor = colorScheme.error
+  val loopAccentColor = colorScheme.secondary
+  val loopOutsideScrim = colorScheme.scrim.copy(alpha = 0.28f)
 
   val borderColor = when {
     interactionMode == WaveformInteractionMode.ENVELOPE && enabled -> envelopeColor.copy(alpha = 0.7f)
     interactionMode == WaveformInteractionMode.MUTE && enabled -> muteColor.copy(alpha = 0.7f)
+    loopSettings.isLooping && enabled -> loopAccentColor.copy(alpha = 0.72f)
     isPlaying -> playheadColor.copy(alpha = 0.35f)
     else -> colorScheme.outlineVariant
   }
@@ -177,8 +188,22 @@ fun WaveformVisualizer(
           WaveformInteractionMode.SCRUB -> {
             detectHorizontalDragGestures(
               onDragStart = { offset ->
-                isDragging = true
                 val fraction = (offset.x / canvasWidthPx).coerceIn(0f, 1f)
+                val loop = currentLoopSettings
+                if (loop.isLoopSelection) {
+                  val handleHitThreshold = (28.dp.toPx() / canvasWidthPx).coerceIn(0.04f, 0.14f)
+                  val distA = abs(fraction - loop.selectionStartFraction)
+                  val distB = abs(fraction - loop.selectionEndFraction)
+                  if (distA <= handleHitThreshold && distA <= distB) {
+                    activeLoopHandle = 1
+                    return@detectHorizontalDragGestures
+                  } else if (distB <= handleHitThreshold) {
+                    activeLoopHandle = 2
+                    return@detectHorizontalDragGestures
+                  }
+                }
+                activeLoopHandle = 0
+                isDragging = true
                 dragFraction = fraction
                 currentOnScrubStart()
                 currentOnScrubToPosition((fraction * safeDurationMs).toLong())
@@ -186,18 +211,48 @@ fun WaveformVisualizer(
               onHorizontalDrag = { change, _ ->
                 change.consume()
                 val fraction = (change.position.x / canvasWidthPx).coerceIn(0f, 1f)
-                dragFraction = fraction
-                currentOnScrubToPosition((fraction * safeDurationMs).toLong())
+                when (activeLoopHandle) {
+                  1 -> {
+                    val loop = currentLoopSettings
+                    val maxStart = (loop.selectionEndFraction - SeamlessLoopDsp.MIN_SELECTION_FRACTION)
+                      .coerceAtLeast(0f)
+                    currentOnLoopSelectionRangeChange(
+                      fraction.coerceIn(0f, maxStart),
+                      loop.selectionEndFraction,
+                    )
+                  }
+                  2 -> {
+                    val loop = currentLoopSettings
+                    val minEnd = (loop.selectionStartFraction + SeamlessLoopDsp.MIN_SELECTION_FRACTION)
+                      .coerceAtMost(1f)
+                    currentOnLoopSelectionRangeChange(
+                      loop.selectionStartFraction,
+                      fraction.coerceIn(minEnd, 1f),
+                    )
+                  }
+                  else -> {
+                    dragFraction = fraction
+                    currentOnScrubToPosition((fraction * safeDurationMs).toLong())
+                  }
+                }
               },
               onDragEnd = {
-                val targetMs = (dragFraction * safeDurationMs).toLong()
-                isDragging = false
-                currentOnScrubEnd(targetMs)
+                if (activeLoopHandle != 0) {
+                  activeLoopHandle = 0
+                } else {
+                  val targetMs = (dragFraction * safeDurationMs).toLong()
+                  isDragging = false
+                  currentOnScrubEnd(targetMs)
+                }
               },
               onDragCancel = {
-                val targetMs = (dragFraction * safeDurationMs).toLong()
-                isDragging = false
-                currentOnScrubEnd(targetMs)
+                if (activeLoopHandle != 0) {
+                  activeLoopHandle = 0
+                } else {
+                  val targetMs = (dragFraction * safeDurationMs).toLong()
+                  isDragging = false
+                  currentOnScrubEnd(targetMs)
+                }
               },
             )
           }
@@ -249,6 +304,38 @@ fun WaveformVisualizer(
       val slotWidth = size.width / count
       val barWidth = (slotWidth * 0.58f).coerceAtLeast(2f)
       val centerY = size.height / 2f
+
+      // Seamless A–B Loop Selection background highlight & dimmed exterior regions
+      if (enabled && loopSettings.isLoopSelection) {
+        val normLoop = loopSettings.normalized()
+        val loopLeftX = (normLoop.selectionStartFraction * size.width).coerceIn(0f, size.width)
+        val loopRightX = (normLoop.selectionEndFraction * size.width).coerceIn(loopLeftX, size.width)
+        if (loopLeftX > 0f) {
+          drawRect(
+            color = loopOutsideScrim,
+            topLeft = Offset.Zero,
+            size = Size(loopLeftX, size.height),
+          )
+        }
+        if (loopRightX < size.width) {
+          drawRect(
+            color = loopOutsideScrim,
+            topLeft = Offset(loopRightX, 0f),
+            size = Size(size.width - loopRightX, size.height),
+          )
+        }
+        drawRect(
+          brush = Brush.verticalGradient(
+            colors = listOf(
+              loopAccentColor.copy(alpha = 0.22f),
+              loopAccentColor.copy(alpha = 0.08f),
+              loopAccentColor.copy(alpha = 0.22f),
+            ),
+          ),
+          topLeft = Offset(loopLeftX, 0f),
+          size = Size((loopRightX - loopLeftX).coerceAtLeast(2f), size.height),
+        )
+      }
 
       // Muted segment background overlays
       envelope.mutedSegments.forEach { seg ->
@@ -419,6 +506,58 @@ fun WaveformVisualizer(
             )
           }
         }
+      }
+
+      // Seamless A–B Loop Selection boundary rails & draggable bracket handles
+      if (enabled && loopSettings.isLoopSelection) {
+        val normLoop = loopSettings.normalized()
+        val loopLeftX = (normLoop.selectionStartFraction * size.width).coerceIn(2f, size.width - 2f)
+        val loopRightX = (normLoop.selectionEndFraction * size.width).coerceIn(loopLeftX + 2f, size.width - 2f)
+        val railStroke = 2.2.dp.toPx()
+        val pillWidth = 6.dp.toPx()
+        val pillHeight = 12.dp.toPx()
+
+        // Top & bottom connecting loop bracket bars
+        drawLine(
+          color = loopAccentColor.copy(alpha = 0.78f),
+          start = Offset(loopLeftX, 1.5f),
+          end = Offset(loopRightX, 1.5f),
+          strokeWidth = 2.dp.toPx(),
+        )
+        drawLine(
+          color = loopAccentColor.copy(alpha = 0.78f),
+          start = Offset(loopLeftX, size.height - 1.5f),
+          end = Offset(loopRightX, size.height - 1.5f),
+          strokeWidth = 2.dp.toPx(),
+        )
+
+        // Left (A) rail & handle pill
+        drawLine(
+          color = loopAccentColor,
+          start = Offset(loopLeftX, 0f),
+          end = Offset(loopLeftX, size.height),
+          strokeWidth = railStroke,
+        )
+        drawRoundRect(
+          color = loopAccentColor,
+          topLeft = Offset((loopLeftX - pillWidth / 2f).coerceAtLeast(0f), centerY - pillHeight / 2f),
+          size = Size(pillWidth, pillHeight),
+          cornerRadius = CornerRadius(pillWidth / 2f, pillWidth / 2f),
+        )
+
+        // Right (B) rail & handle pill
+        drawLine(
+          color = loopAccentColor,
+          start = Offset(loopRightX, 0f),
+          end = Offset(loopRightX, size.height),
+          strokeWidth = railStroke,
+        )
+        drawRoundRect(
+          color = loopAccentColor,
+          topLeft = Offset((loopRightX - pillWidth / 2f).coerceAtMost(size.width - pillWidth), centerY - pillHeight / 2f),
+          size = Size(pillWidth, pillHeight),
+          cornerRadius = CornerRadius(pillWidth / 2f, pillWidth / 2f),
+        )
       }
 
       // Playhead cursor + ambient halo synced with playback position

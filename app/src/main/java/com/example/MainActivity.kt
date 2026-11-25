@@ -1,8 +1,10 @@
 package com.example
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -157,7 +159,11 @@ class MainActivity : ComponentActivity() {
             },
             onShareMp3 = { track ->
               viewModel.shareTrackAsMp3(track) { chooserIntent ->
-                startActivity(chooserIntent)
+                try {
+                  startActivity(chooserIntent)
+                } catch (_: ActivityNotFoundException) {
+                  // No compatible share target installed on device
+                }
               }
             },
             onRequestNotificationPermission = {
@@ -166,10 +172,28 @@ class MainActivity : ComponentActivity() {
               }
             },
             onOpenNotificationSettings = {
-              val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+              val settingsIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                  putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                }
+              } else {
+                Intent(
+                  Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                  Uri.fromParts("package", packageName, null),
+                )
               }
-              startActivity(settingsIntent)
+              try {
+                startActivity(settingsIntent)
+              } catch (_: ActivityNotFoundException) {
+                runCatching {
+                  startActivity(
+                    Intent(
+                      Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                      Uri.fromParts("package", packageName, null),
+                    ),
+                  )
+                }
+              }
             },
             onPromptNotificationsIfNeeded = {
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -243,6 +267,11 @@ class MainActivity : ComponentActivity() {
           onSkipPrevious = bindings.onSkipPrevious,
           onSkipNext = bindings.onSkipNext,
           onToggleLoop = bindings.onToggleLoop,
+          onSelectLoopMode = bindings.onSelectLoopMode,
+          onLoopSelectionRangeChange = bindings.onLoopSelectionRangeChange,
+          onSetLoopStartAtPlayhead = bindings.onSetLoopStartAtPlayhead,
+          onSetLoopEndAtPlayhead = bindings.onSetLoopEndAtPlayhead,
+          onResetLoopSelection = bindings.onResetLoopSelection,
           onVolumeChange = bindings.onVolumeChange,
           onToggleMute = bindings.onToggleMute,
           onPitchChange = bindings.onPitchChange,
@@ -258,6 +287,7 @@ class MainActivity : ComponentActivity() {
           onEqualizerEnabledChange = bindings.onEqualizerEnabledChange,
           onSelectEqualizerPreset = bindings.onSelectEqualizerPreset,
           onEqualizerBandGainChange = bindings.onEqualizerBandGainChange,
+          onThreeBandEqualizerGainChange = bindings.onThreeBandEqualizerGainChange,
           onResetEqualizer = bindings.onResetEqualizer,
           onAutoPostGainEnabledChange = bindings.onAutoPostGainEnabledChange,
           onSelectLoudnessTarget = bindings.onSelectLoudnessTarget,
@@ -431,6 +461,11 @@ private class SonicForgeScreenBindings(
   val onSkipPrevious = viewModel::skipPrevious
   val onSkipNext = viewModel::skipNext
   val onToggleLoop = viewModel::toggleLoop
+  val onSelectLoopMode = viewModel::setLoopMode
+  val onLoopSelectionRangeChange = viewModel::setLoopSelectionRange
+  val onSetLoopStartAtPlayhead = viewModel::setLoopSelectionStartAtCurrentPosition
+  val onSetLoopEndAtPlayhead = viewModel::setLoopSelectionEndAtCurrentPosition
+  val onResetLoopSelection = viewModel::resetLoopSelection
   val onVolumeChange = viewModel::setVolume
   val onToggleMute = viewModel::toggleMute
   val onPitchChange = viewModel::setPitchSemitones
@@ -446,6 +481,7 @@ private class SonicForgeScreenBindings(
   val onEqualizerEnabledChange = viewModel::setEqualizerEnabled
   val onSelectEqualizerPreset = viewModel::selectEqualizerPreset
   val onEqualizerBandGainChange = viewModel::setEqualizerBandGain
+  val onThreeBandEqualizerGainChange = viewModel::setThreeBandEqualizerGain
   val onResetEqualizer = viewModel::resetEqualizer
   val onAutoPostGainEnabledChange = viewModel::setAutoPostGainEnabled
   val onSelectLoudnessTarget = viewModel::selectLoudnessTarget

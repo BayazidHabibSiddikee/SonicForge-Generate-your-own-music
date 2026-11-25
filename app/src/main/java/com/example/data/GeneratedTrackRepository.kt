@@ -102,20 +102,20 @@ class GeneratedTrackRepository(
     favoritesOnly: Boolean = false,
   ): Flow<List<GeneratedTrack>> {
     val trimmedQuery = query.trim()
-    val hasCategoryFilter = !category.isNullOrBlank() && category != ALL_CATEGORIES
+    val activeCategory = category?.takeIf { it.isNotBlank() && it != ALL_CATEGORIES }
     val baseFlow = when {
       trimmedQuery.isNotEmpty() && favoritesOnly -> dao.searchFavoriteTracks(trimmedQuery)
       trimmedQuery.isNotEmpty() -> dao.searchTracks(trimmedQuery)
-      favoritesOnly && hasCategoryFilter -> dao.observeFavoriteTracksByCategory(category!!)
+      favoritesOnly && activeCategory != null -> dao.observeFavoriteTracksByCategory(activeCategory)
       favoritesOnly -> dao.observeFavoriteTracks()
-      hasCategoryFilter -> dao.observeTracksByCategory(category!!)
+      activeCategory != null -> dao.observeTracksByCategory(activeCategory)
       else -> dao.observeAllTracks()
     }
     return baseFlow.map { entities ->
       entities
         .filter { File(it.filePath).exists() }
         .filter { entity ->
-          !hasCategoryFilter || entity.category == category
+          activeCategory == null || entity.category == activeCategory
         }
         .filter { entity ->
           !favoritesOnly || entity.isFavorite

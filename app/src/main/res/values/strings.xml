@@ -166,6 +166,17 @@
     <string name="eq_dsp_subtitle">Real-time ISO biquad equalizer (60 Hz – 12 kHz)</string>
     <string name="eq_reset">Reset EQ</string>
     <string name="cd_eq_toggle">Toggle 8-band graphic equalizer</string>
+    <string name="eq_3band_title">3-Band Equalizer</string>
+    <string name="eq_3band_subtitle">Shape Low, Mid &amp; High frequency balance</string>
+    <string name="eq_3band_low_label">Low</string>
+    <string name="eq_3band_mid_label">Mid</string>
+    <string name="eq_3band_high_label">High</string>
+    <string name="eq_3band_low_range">60–310 Hz</string>
+    <string name="eq_3band_mid_range">600 Hz–3 kHz</string>
+    <string name="eq_3band_high_range">6–12 kHz</string>
+    <string name="cd_eq_3band_toggle">Toggle 3-band equalizer</string>
+    <string name="cd_eq_3band_curve">3-band equalizer frequency response curve</string>
+    <string name="cd_eq_3band_reset_band">Reset %1$s band to 0 dB</string>
     <string name="export_audio_title">Export &amp; Share Audio</string>
     <string name="export_format_label">Audio Format</string>
     <string name="export_bitrate_label">Bit-Rate / Quality</string>
@@ -416,5 +427,21 @@
     <string name="track_menu_edit_tags">Edit category &amp; tags</string>
     <string name="track_menu_delete">Delete track</string>
     <string name="studio_tab_ai_packs">AI &amp; Packs</string>
+    <string name="loop_card_title">Seamless Loop</string>
+    <string name="loop_status_off">Loop off · Plays once</string>
+    <string name="loop_status_full_track">Loop Track · Seamless micro-crossfade</string>
+    <string name="loop_status_selection_fmt">Loop Selection · %1$s A–B seamless loop</string>
+    <string name="loop_mode_off_label">Off</string>
+    <string name="loop_mode_track_label">Loop Track</string>
+    <string name="loop_mode_selection_label">Loop Selection</string>
+    <string name="loop_point_a_fmt">A %1$s</string>
+    <string name="loop_point_b_fmt">B %1$s</string>
+    <string name="loop_set_a_button">Set A (Now)</string>
+    <string name="loop_set_b_button">Set B (Now)</string>
+    <string name="loop_preset_first_half">1st Half</string>
+    <string name="loop_preset_middle">Middle</string>
+    <string name="loop_preset_second_half">2nd Half</string>
+    <string name="loop_preset_full">Full Span</string>
+    <string name="cd_loop_mode_cycle">Cycle loop mode: off, loop track, or loop selection</string>
 </resources>
 

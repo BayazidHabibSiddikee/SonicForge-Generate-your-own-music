@@ -102,14 +102,15 @@ fun FrequencySpectrumAnalyzerCard(
     else -> 0f
   }
 
+  val diagCentroidHz = bufferDiagnostics?.spectralCentroidHz ?: 0
   val peakHz = when {
     isLiveActive && liveSpectrum.peakFrequencyHz > 0 -> liveSpectrum.peakFrequencyHz
-    hasTrack && (bufferDiagnostics?.spectralCentroidHz ?: 0) > 0 -> bufferDiagnostics!!.spectralCentroidHz
+    hasTrack && diagCentroidHz > 0 -> diagCentroidHz
     else -> 0
   }
   val centroidHz = when {
     isLiveActive && liveSpectrum.spectralCentroidHz > 0 -> liveSpectrum.spectralCentroidHz
-    hasTrack && (bufferDiagnostics?.spectralCentroidHz ?: 0) > 0 -> bufferDiagnostics!!.spectralCentroidHz
+    hasTrack && diagCentroidHz > 0 -> diagCentroidHz
     else -> 0
   }
 

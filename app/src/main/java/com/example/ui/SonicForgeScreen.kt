@@ -122,6 +122,8 @@ import com.example.audio.AudioExportFormat
 import com.example.audio.DrumKitPreset
 import com.example.audio.DrumPadVoice
 import com.example.audio.EqPreset
+import com.example.audio.ThreeBandEqBand
+import com.example.audio.TrackLoopMode
 import com.example.audio.GuitarChordShape
 import com.example.audio.GuitarProgressionPreset
 import com.example.audio.GuitarStrumStyle
@@ -239,6 +241,11 @@ fun SonicForgeScreen(
   onSkipPrevious: () -> Unit,
   onSkipNext: () -> Unit,
   onToggleLoop: () -> Unit,
+  onSelectLoopMode: (TrackLoopMode) -> Unit = {},
+  onLoopSelectionRangeChange: (startFraction: Float, endFraction: Float) -> Unit = { _, _ -> },
+  onSetLoopStartAtPlayhead: () -> Unit = {},
+  onSetLoopEndAtPlayhead: () -> Unit = {},
+  onResetLoopSelection: () -> Unit = {},
   onVolumeChange: (Float) -> Unit,
   onToggleMute: () -> Unit,
   onPitchChange: (Float) -> Unit = {},
@@ -254,6 +261,7 @@ fun SonicForgeScreen(
   onEqualizerEnabledChange: (Boolean) -> Unit = {},
   onSelectEqualizerPreset: (EqPreset) -> Unit = {},
   onEqualizerBandGainChange: (bandIndex: Int, gainDb: Float) -> Unit = { _, _ -> },
+  onThreeBandEqualizerGainChange: (band: ThreeBandEqBand, gainDb: Float) -> Unit = { _, _ -> },
   onResetEqualizer: () -> Unit = {},
   onAutoPostGainEnabledChange: (Boolean) -> Unit = {},
   onSelectLoudnessTarget: (LoudnessTarget) -> Unit = {},
@@ -663,6 +671,11 @@ fun SonicForgeScreen(
                 onSkipPrevious = onSkipPrevious,
                 onSkipNext = onSkipNext,
                 onToggleLoop = onToggleLoop,
+                onSelectLoopMode = onSelectLoopMode,
+                onLoopSelectionRangeChange = onLoopSelectionRangeChange,
+                onSetLoopStartAtPlayhead = onSetLoopStartAtPlayhead,
+                onSetLoopEndAtPlayhead = onSetLoopEndAtPlayhead,
+                onResetLoopSelection = onResetLoopSelection,
                 onVolumeChange = onVolumeChange,
                 onToggleMute = onToggleMute,
                 onPitchChange = onPitchChange,
@@ -679,6 +692,7 @@ fun SonicForgeScreen(
                 onEqualizerEnabledChange = onEqualizerEnabledChange,
                 onSelectEqualizerPreset = onSelectEqualizerPreset,
                 onEqualizerBandGainChange = onEqualizerBandGainChange,
+                onThreeBandEqualizerGainChange = onThreeBandEqualizerGainChange,
                 onResetEqualizer = onResetEqualizer,
                 loudnessTarget = uiState.loudnessTarget,
                 autoPostGainEnabled = uiState.autoPostGainEnabled,
@@ -766,6 +780,11 @@ fun SonicForgeScreen(
                     onSkipPrevious = onSkipPrevious,
                     onSkipNext = onSkipNext,
                     onToggleLoop = onToggleLoop,
+                    onSelectLoopMode = onSelectLoopMode,
+                    onLoopSelectionRangeChange = onLoopSelectionRangeChange,
+                    onSetLoopStartAtPlayhead = onSetLoopStartAtPlayhead,
+                    onSetLoopEndAtPlayhead = onSetLoopEndAtPlayhead,
+                    onResetLoopSelection = onResetLoopSelection,
                     onVolumeChange = onVolumeChange,
                     onToggleMute = onToggleMute,
                     onPitchChange = onPitchChange,
@@ -782,6 +801,7 @@ fun SonicForgeScreen(
                     onEqualizerEnabledChange = onEqualizerEnabledChange,
                     onSelectEqualizerPreset = onSelectEqualizerPreset,
                     onEqualizerBandGainChange = onEqualizerBandGainChange,
+                    onThreeBandEqualizerGainChange = onThreeBandEqualizerGainChange,
                     onResetEqualizer = onResetEqualizer,
                     loudnessTarget = uiState.loudnessTarget,
                     autoPostGainEnabled = uiState.autoPostGainEnabled,

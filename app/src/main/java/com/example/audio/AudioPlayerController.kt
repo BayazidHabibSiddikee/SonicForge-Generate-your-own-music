@@ -9,6 +9,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.example.model.GeneratedTrack
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.min
@@ -36,6 +37,7 @@ data class AudioPlaybackState(
   val volume: Float = 0.85f,
   val isMuted: Boolean = false,
   val isLooping: Boolean = false,
+  val loopSettings: TrackLoopSettings = TrackLoopSettings(),
   val isScrubbing: Boolean = false,
   val pitchSemitones: Float = 0f,
   val reverb: ReverbSettings = ReverbSettings(),
@@ -89,14 +91,22 @@ class AudioPlayerController private constructor(
   private var fallbackTickerJob: Job? = null
   private var nextDeckLoadJob: Job? = null
 
+  @Volatile
   private var activeBuffer: RawAudioBuffer? = null
+  @Volatile
   private var activeAudioTrack: AudioTrack? = null
+  @Volatile
   private var activeShifter: RealTimePitchShifter? = null
+  @Volatile
   private var activeReverb: RealTimeRoomReverb? = null
+  @Volatile
   private var activeEqualizer: RealTimeGraphicEqualizer? = null
+  @Volatile
   private var activeBpmDetector: RealTimeBpmDetector? = null
+  @Volatile
   private var activeSpectrumAnalyzer: RealTimeSpectrumAnalyzer? = null
   private val playbackFrameCursor = AtomicInteger(0)
+  private val pendingDspReset = AtomicBoolean(false)
 
   @Volatile
   private var preparedNextDeck: CrossfadeDeck? = null
@@ -111,6 +121,7 @@ class AudioPlayerController private constructor(
   private var controllerWakeLock: PowerManager.WakeLock? = null
 
   private var lastNonZeroVolume: Float = 0.85f
+  @Volatile
   private var playlist: List<GeneratedTrack> = emptyList()
 
   private val _state = MutableStateFlow(AudioPlaybackState())
@@ -121,8 +132,9 @@ class AudioPlayerController private constructor(
   }
 
   fun currentTrack(): GeneratedTrack? {
-    val id = _state.value.currentTrackId ?: return playlist.firstOrNull()
-    return playlist.firstOrNull { it.id == id } ?: playlist.firstOrNull()
+    val snapshot = playlist
+    val id = _state.value.currentTrackId ?: return snapshot.firstOrNull()
+    return snapshot.firstOrNull { it.id == id } ?: snapshot.firstOrNull()
   }
 
   fun loadTrack(
@@ -282,7 +294,7 @@ class AudioPlayerController private constructor(
           Log.w(TAG, "WakeMode not available in this environment", e)
         }
         setDataSource(file.absolutePath)
-        isLooping = _state.value.isLooping
+        isLooping = _state.value.loopSettings.isLoopTrack
         val vol = _state.value.effectiveVolume
         setVolume(vol, vol)
 
@@ -473,29 +485,18 @@ class AudioPlayerController private constructor(
 
       try {
         while (isActive && _state.value.isPlaying) {
+          if (pendingDspReset.getAndSet(false)) {
+            shifter.reset()
+            reverb.reset()
+            equalizer.reset()
+            bpmDetector.reset()
+            spectrumAnalyzer.reset()
+          }
           val cursor = playbackFrameCursor.get()
           val snapshot = _state.value
+          val activeLoop = snapshot.loopSettings
 
-          if (cursor >= totalFrames) {
-            if (snapshot.isLooping) {
-              clearNextDeck()
-              playbackFrameCursor.set(0)
-              shifter.reset()
-              reverb.reset()
-              equalizer.reset()
-              spectrumAnalyzer.reset()
-              _state.update {
-                it.copy(
-                  positionMs = 0L,
-                  isCrossfading = false,
-                  crossfadeProgress = 0f,
-                  crossfadeNextTrackTitle = null,
-                  liveSpectrum = RealTimeSpectrumSnapshot(),
-                )
-              }
-              continue
-            }
-
+          if (cursor >= totalFrames && !activeLoop.isLooping) {
             val nextDeck = preparedNextDeck
             if (nextDeck != null &&
               nextDeck.buffer.sampleRate == sampleRate &&
@@ -597,16 +598,40 @@ class AudioPlayerController private constructor(
             }
           }
 
-          val framesToProcess = min(chunkFrames, totalFrames - cursor)
-          val sampleOffset = cursor * channels
+          val framesToProcess: Int
+          val nextCursorAfterChunk: Int
+          val envelopeStartFrame: Int
+          if (activeLoop.isLooping) {
+            val loopRead = SeamlessLoopDsp.extractSeamlessLoopChunk(
+              pcmSamples = buffer.pcmSamples,
+              totalFrames = totalFrames,
+              sampleRate = sampleRate,
+              channelCount = channels,
+              cursorFrame = cursor,
+              requestedFrames = chunkFrames,
+              loopSettings = activeLoop,
+              destination = inChunk,
+            )
+            framesToProcess = loopRead.framesRead
+            nextCursorAfterChunk = loopRead.nextFrameCursor
+            val loopStart = activeLoop.resolvedStartFrame(totalFrames)
+            val loopEnd = activeLoop.resolvedEndFrame(totalFrames)
+            envelopeStartFrame = if (cursor in loopStart until loopEnd) cursor else loopStart
+            if (framesToProcess <= 0) continue
+          } else {
+            framesToProcess = min(chunkFrames, totalFrames - cursor)
+            val sampleOffset = cursor * channels
+            val sampleCountLinear = framesToProcess * channels
+            buffer.pcmSamples.copyInto(
+              destination = inChunk,
+              destinationOffset = 0,
+              startIndex = sampleOffset,
+              endIndex = sampleOffset + sampleCountLinear,
+            )
+            nextCursorAfterChunk = cursor + framesToProcess
+            envelopeStartFrame = cursor
+          }
           val sampleCount = framesToProcess * channels
-
-          buffer.pcmSamples.copyInto(
-            destination = inChunk,
-            destinationOffset = 0,
-            startIndex = sampleOffset,
-            endIndex = sampleOffset + sampleCount,
-          )
 
           // Pre-decode next playlist track before entering the crossfade tail
           if (!snapshot.isLooping && snapshot.crossfade.isActive && playlist.size > 1) {
@@ -788,7 +813,7 @@ class AudioPlayerController private constructor(
               samples = outChunk,
               frameCount = framesToProcess,
               channelCount = channels,
-              startFrame = cursor,
+              startFrame = envelopeStartFrame,
               totalFrames = totalFrames,
               envelope = snapshot.activeEnvelope,
             )
@@ -823,8 +848,8 @@ class AudioPlayerController private constructor(
           }
 
           // Advance only if user hasn't committed a seek concurrently
-          val advanced = playbackFrameCursor.compareAndSet(cursor, cursor + framesToProcess)
-          val effectiveFrame = if (advanced) cursor + framesToProcess else playbackFrameCursor.get()
+          val advanced = playbackFrameCursor.compareAndSet(cursor, nextCursorAfterChunk)
+          val effectiveFrame = if (advanced) nextCursorAfterChunk else playbackFrameCursor.get()
 
           uiTickCounter++
           if (uiTickCounter % 2 == 0) {
@@ -846,6 +871,10 @@ class AudioPlayerController private constructor(
       } catch (_: CancellationException) {
         // Streaming paused or stopped
       } catch (e: Exception) {
+        if (!isActive || !_state.value.isPlaying) {
+          // Track was intentionally paused/stopped/replaced while write was unblocking
+          return@launch
+        }
         Log.e(TAG, "PCM streaming loop exception", e)
         withContext(Dispatchers.Main.immediate) {
           releaseControllerWakeLock()
@@ -865,6 +894,7 @@ class AudioPlayerController private constructor(
   }
 
   private fun pausePcmStreaming() {
+    val wasStreaming = streamingJob?.isActive == true
     streamingJob?.cancel()
     streamingJob = null
     releaseControllerWakeLock()
@@ -888,7 +918,11 @@ class AudioPlayerController private constructor(
       _state.value.positionMs
     }
 
-    activeSpectrumAnalyzer?.reset()
+    if (wasStreaming) {
+      pendingDspReset.set(true)
+    } else {
+      activeSpectrumAnalyzer?.reset()
+    }
     _state.update {
       it.copy(
         isPlaying = false,
@@ -902,40 +936,48 @@ class AudioPlayerController private constructor(
   }
 
   fun skipPrevious() {
-    if (playlist.isEmpty()) return
-    val currentIdx = playlist.indexOfFirst { it.id == _state.value.currentTrackId }
-    val prevIdx = if (currentIdx <= 0) playlist.lastIndex else currentIdx - 1
-    loadTrack(playlist[prevIdx], autoPlay = true)
+    val snapshot = playlist
+    if (snapshot.isEmpty()) return
+    val currentIdx = snapshot.indexOfFirst { it.id == _state.value.currentTrackId }
+    val prevIdx = if (currentIdx <= 0) snapshot.lastIndex else currentIdx - 1
+    loadTrack(snapshot[prevIdx], autoPlay = true)
   }
 
   fun skipNext() {
-    if (playlist.isEmpty()) return
-    val currentIdx = playlist.indexOfFirst { it.id == _state.value.currentTrackId }
-    val nextIdx = if (currentIdx < 0 || currentIdx >= playlist.lastIndex) 0 else currentIdx + 1
-    loadTrack(playlist[nextIdx], autoPlay = true)
+    val snapshot = playlist
+    if (snapshot.isEmpty()) return
+    val currentIdx = snapshot.indexOfFirst { it.id == _state.value.currentTrackId }
+    val nextIdx = if (currentIdx < 0 || currentIdx >= snapshot.lastIndex) 0 else currentIdx + 1
+    loadTrack(snapshot[nextIdx], autoPlay = true)
   }
 
   fun stopPlayback() {
+    val wasStreaming = streamingJob?.isActive == true
     streamingJob?.cancel()
     streamingJob = null
     clearNextDeck()
     stopFallbackTicker()
     releaseControllerWakeLock()
 
-    if (activeAudioTrack != null && _state.value.isPrepared) {
+    val track = activeAudioTrack
+    if (track != null && _state.value.isPrepared) {
       try {
-        if (activeAudioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) {
-          activeAudioTrack?.pause()
+        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+          track.pause()
         }
-        activeAudioTrack?.flush()
+        track.flush()
       } catch (_: IllegalStateException) {
       }
       playbackFrameCursor.set(0)
-      activeShifter?.reset()
-      activeReverb?.reset()
-      activeEqualizer?.reset()
-      activeBpmDetector?.reset()
-      activeSpectrumAnalyzer?.reset()
+      if (wasStreaming) {
+        pendingDspReset.set(true)
+      } else {
+        activeShifter?.reset()
+        activeReverb?.reset()
+        activeEqualizer?.reset()
+        activeBpmDetector?.reset()
+        activeSpectrumAnalyzer?.reset()
+      }
     }
 
     val mp = fallbackMediaPlayer
@@ -990,12 +1032,15 @@ class AudioPlayerController private constructor(
         .toInt()
         .coerceIn(0, buffer.frameCount)
       playbackFrameCursor.set(targetFrame)
-      activeShifter?.reset()
-      activeReverb?.reset()
-      activeEqualizer?.reset()
-      activeBpmDetector?.reset()
-      activeSpectrumAnalyzer?.reset()
-      if (!_state.value.isPlaying) {
+      if (_state.value.isPlaying || streamingJob?.isActive == true) {
+        // Defer DSP reset onto the streaming loop thread to avoid concurrent mutation
+        pendingDspReset.set(true)
+      } else {
+        activeShifter?.reset()
+        activeReverb?.reset()
+        activeEqualizer?.reset()
+        activeBpmDetector?.reset()
+        activeSpectrumAnalyzer?.reset()
         try {
           activeAudioTrack?.flush()
         } catch (_: IllegalStateException) {
@@ -1132,6 +1177,10 @@ class AudioPlayerController private constructor(
     _state.update { it.copy(equalizer = it.equalizer.withBandGain(bandIndex, gainDb)) }
   }
 
+  fun setThreeBandEqualizerGain(band: ThreeBandEqBand, gainDb: Float) {
+    _state.update { it.copy(equalizer = it.equalizer.withThreeBandGain(band, gainDb)) }
+  }
+
   fun resetEqualizer() {
     _state.update { it.copy(equalizer = EqualizerSettings()) }
   }
@@ -1220,20 +1269,103 @@ class AudioPlayerController private constructor(
   }
 
   fun toggleLoop() {
-    val nextLoop = !_state.value.isLooping
-    _state.update { it.copy(isLooping = nextLoop) }
-    if (nextLoop) {
+    val nextMode = _state.value.loopSettings.nextCycledMode()
+    setLoopMode(nextMode)
+  }
+
+  fun setLoopMode(mode: TrackLoopMode) {
+    val updatedLoop = _state.value.loopSettings.withMode(mode)
+    applyUpdatedLoopSettings(updatedLoop, snapCursorIfOutside = mode == TrackLoopMode.LOOP_SELECTION)
+  }
+
+  fun setLoopSelectionRange(
+    startFraction: Float,
+    endFraction: Float,
+    autoEnableSelectionMode: Boolean = true,
+  ) {
+    val updatedLoop = _state.value.loopSettings.withSelectionRange(
+      startFraction = startFraction,
+      endFraction = endFraction,
+      autoEnableSelectionMode = autoEnableSelectionMode,
+    )
+    applyUpdatedLoopSettings(updatedLoop, snapCursorIfOutside = updatedLoop.isLoopSelection)
+  }
+
+  fun setLoopSelectionStartAtCurrentPosition() {
+    val snap = _state.value
+    val duration = snap.durationMs.coerceAtLeast(1L)
+    val fraction = (snap.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    val updatedLoop = snap.loopSettings.withLoopInAt(fraction, autoEnableSelectionMode = true)
+    applyUpdatedLoopSettings(updatedLoop, snapCursorIfOutside = false)
+  }
+
+  fun setLoopSelectionEndAtCurrentPosition() {
+    val snap = _state.value
+    val duration = snap.durationMs.coerceAtLeast(1L)
+    val fraction = (snap.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    val updatedLoop = snap.loopSettings.withLoopOutAt(fraction, autoEnableSelectionMode = true)
+    applyUpdatedLoopSettings(updatedLoop, snapCursorIfOutside = false)
+  }
+
+  fun resetLoopSelection() {
+    val updatedLoop = _state.value.loopSettings.resetSelection()
+    applyUpdatedLoopSettings(updatedLoop, snapCursorIfOutside = updatedLoop.isLoopSelection)
+  }
+
+  private fun applyUpdatedLoopSettings(
+    updatedLoop: TrackLoopSettings,
+    snapCursorIfOutside: Boolean,
+  ) {
+    val normalizedLoop = updatedLoop.normalized()
+    val nextLooping = normalizedLoop.isLooping
+    if (nextLooping) {
       clearNextDeck()
-      _state.update {
-        it.copy(
-          isCrossfading = false,
-          crossfadeProgress = 0f,
-          crossfadeNextTrackTitle = null,
-        )
+    }
+
+    var snappedPosMs: Long? = null
+    if (snapCursorIfOutside && normalizedLoop.isLoopSelection) {
+      val buf = activeBuffer
+      if (buf != null && buf.frameCount > 0) {
+        val startFrame = normalizedLoop.resolvedStartFrame(buf.frameCount)
+        val endFrame = normalizedLoop.resolvedEndFrame(buf.frameCount)
+        val cur = playbackFrameCursor.get()
+        if (cur < startFrame || cur >= endFrame) {
+          playbackFrameCursor.set(startFrame)
+          snappedPosMs = ((startFrame.toDouble() / buf.sampleRate.coerceAtLeast(1)) * 1000.0)
+            .toLong()
+            .coerceIn(0L, _state.value.durationMs.coerceAtLeast(1L))
+        }
+      } else {
+        val mp = fallbackMediaPlayer
+        val dur = _state.value.durationMs.coerceAtLeast(1L)
+        val startMs = normalizedLoop.selectionStartMs(dur)
+        val endMs = normalizedLoop.selectionEndMs(dur)
+        if (mp != null && _state.value.isPrepared) {
+          val curMs = _state.value.positionMs
+          if (curMs < startMs || curMs >= endMs) {
+            try {
+              mp.seekTo(startMs.toInt())
+              snappedPosMs = startMs
+            } catch (_: IllegalStateException) {
+            }
+          }
+        }
       }
     }
+
+    _state.update { current ->
+      current.copy(
+        isLooping = nextLooping,
+        loopSettings = normalizedLoop,
+        positionMs = snappedPosMs ?: current.positionMs,
+        isCrossfading = if (nextLooping) false else current.isCrossfading,
+        crossfadeProgress = if (nextLooping) 0f else current.crossfadeProgress,
+        crossfadeNextTrackTitle = if (nextLooping) null else current.crossfadeNextTrackTitle,
+      )
+    }
+
     try {
-      fallbackMediaPlayer?.isLooping = nextLoop
+      fallbackMediaPlayer?.isLooping = normalizedLoop.isLoopTrack
     } catch (e: IllegalStateException) {
       Log.e(TAG, "Failed to update looping state", e)
     }
@@ -1293,10 +1425,16 @@ class AudioPlayerController private constructor(
       clearNextDeck()
     }
     _state.update { current ->
+      val restoredLoop = if (isLooping) {
+        if (current.loopSettings.isLooping) current.loopSettings else current.loopSettings.withMode(TrackLoopMode.LOOP_TRACK)
+      } else {
+        current.loopSettings.withMode(TrackLoopMode.OFF)
+      }
       current.copy(
         volume = safeVolume,
         isMuted = isMuted,
         isLooping = isLooping,
+        loopSettings = restoredLoop,
         pitchSemitones = clampedPitch,
         reverb = reverb,
         equalizer = equalizer,
@@ -1310,7 +1448,7 @@ class AudioPlayerController private constructor(
     applyVolumeToFallbackPlayer()
     fallbackMediaPlayer?.let { mp ->
       try {
-        mp.isLooping = isLooping
+        mp.isLooping = _state.value.loopSettings.isLoopTrack
       } catch (_: IllegalStateException) {
       }
       if (_state.value.isPrepared) {
@@ -1326,6 +1464,7 @@ class AudioPlayerController private constructor(
         volume = it.volume,
         isMuted = it.isMuted,
         isLooping = it.isLooping,
+        loopSettings = it.loopSettings,
         pitchSemitones = it.pitchSemitones,
         reverb = it.reverb,
         equalizer = it.equalizer,
@@ -1348,15 +1487,13 @@ class AudioPlayerController private constructor(
   }
 
   private fun applyPitchToFallbackMediaPlayer(mp: MediaPlayer, semitones: Float) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-      try {
-        val ratio = PitchShiftDsp.semitonesToPitchFactor(semitones).toFloat()
-        val params = mp.playbackParams
-        params.pitch = ratio
-        mp.playbackParams = params
-      } catch (e: Exception) {
-        Log.w(TAG, "Unable to apply PlaybackParams pitch on fallback MediaPlayer", e)
-      }
+    try {
+      val ratio = PitchShiftDsp.semitonesToPitchFactor(semitones).toFloat()
+      val params = mp.playbackParams
+      params.pitch = ratio
+      mp.playbackParams = params
+    } catch (e: Exception) {
+      Log.w(TAG, "Unable to apply PlaybackParams pitch on fallback MediaPlayer", e)
     }
   }
 
@@ -1370,6 +1507,21 @@ class AudioPlayerController private constructor(
           val duration = currentState.durationMs.coerceAtLeast(1L)
           val pos = mp.currentPosition.toLong().coerceIn(0L, duration)
           val remaining = (duration - pos).coerceAtLeast(0L)
+
+          if (currentState.loopSettings.isLoopSelection) {
+            val startMs = currentState.loopSettings.selectionStartMs(duration)
+            val endMs = currentState.loopSettings.selectionEndMs(duration)
+            if (endMs > startMs && pos >= endMs - 40L) {
+              try {
+                mp.seekTo(startMs.toInt())
+              } catch (_: IllegalStateException) {
+              }
+              applyFallbackEnvelopeGain(mp, currentState, startMs, duration)
+              _state.update { it.copy(positionMs = startMs) }
+              delay(40L)
+              continue
+            }
+          }
 
           if (!currentState.isLooping && currentState.crossfade.isActive && playlist.size > 1) {
             val nextTrack = resolveNextTrackInPlaylist(currentState.currentTrackId)
@@ -1529,10 +1681,11 @@ class AudioPlayerController private constructor(
   }
 
   private fun resolveNextTrackInPlaylist(currentTrackId: String?): GeneratedTrack? {
-    if (playlist.size <= 1) return null
-    val currentIdx = playlist.indexOfFirst { it.id == currentTrackId }
-    val nextIdx = if (currentIdx < 0 || currentIdx >= playlist.lastIndex) 0 else currentIdx + 1
-    val candidate = playlist[nextIdx]
+    val snapshot = playlist
+    if (snapshot.size <= 1) return null
+    val currentIdx = snapshot.indexOfFirst { it.id == currentTrackId }
+    val nextIdx = if (currentIdx < 0 || currentIdx >= snapshot.lastIndex) 0 else currentIdx + 1
+    val candidate = snapshot[nextIdx]
     return if (candidate.id == currentTrackId) null else candidate
   }
 
@@ -1663,31 +1816,53 @@ class AudioPlayerController private constructor(
   private fun stopAllPlaybackResources() {
     loadJob?.cancel()
     loadJob = null
-    streamingJob?.cancel()
+    val jobToCancel = streamingJob
     streamingJob = null
+    jobToCancel?.cancel()
+    pendingDspReset.set(false)
     clearNextDeck()
     stopFallbackTicker()
     releaseControllerWakeLock()
 
-    try {
-      activeAudioTrack?.apply {
-        if (playState == AudioTrack.PLAYSTATE_PLAYING) {
-          pause()
+    val trackToRelease = activeAudioTrack
+    activeAudioTrack = null
+    activeBuffer = null
+    activeShifter = null
+    activeReverb = null
+    activeEqualizer = null
+    activeBpmDetector = null
+    activeSpectrumAnalyzer = null
+    playbackFrameCursor.set(0)
+
+    if (trackToRelease != null) {
+      try {
+        if (trackToRelease.playState == AudioTrack.PLAYSTATE_PLAYING) {
+          trackToRelease.pause()
         }
-        flush()
-        release()
+        trackToRelease.flush()
+      } catch (e: Exception) {
+        Log.w(TAG, "Ignored AudioTrack pause/flush exception", e)
       }
-    } catch (e: Exception) {
-      Log.w(TAG, "Ignored AudioTrack release exception", e)
-    } finally {
-      activeAudioTrack = null
-      activeBuffer = null
-      activeShifter = null
-      activeReverb = null
-      activeEqualizer = null
-      activeBpmDetector = null
-      activeSpectrumAnalyzer = null
-      playbackFrameCursor.set(0)
+      if (jobToCancel != null && jobToCancel.isActive) {
+        // Release AudioTrack only after the streaming loop exits track.write()
+        scope.launch(Dispatchers.Default) {
+          try {
+            jobToCancel.join()
+          } catch (_: Exception) {
+          }
+          try {
+            trackToRelease.release()
+          } catch (e: Exception) {
+            Log.w(TAG, "Ignored deferred AudioTrack release exception", e)
+          }
+        }
+      } else {
+        try {
+          trackToRelease.release()
+        } catch (e: Exception) {
+          Log.w(TAG, "Ignored AudioTrack release exception", e)
+        }
+      }
     }
 
     try {
